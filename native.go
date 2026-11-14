@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"html"
 	"io"
 	"net"
 	"net/http"
@@ -151,6 +152,36 @@ func errorEnvelope(code, message string) []byte {
 	return raw
 }
 func handleMethod(method string, request []byte) ([]byte, error) {
+	if method == "management.register" {
+		return json.Marshal(map[string]any{"ok": true, "result": map[string]any{"resources": []map[string]string{{"Path": "/open", "Menu": "Public Enrollment", "Description": "Open the public enrollment page."}}}})
+	}
+	if method == "management.handle" {
+		var req struct{ Method string }
+		if json.Unmarshal(request, &req) != nil {
+			return errorEnvelope("invalid_request", "invalid resource request"), nil
+		}
+		status, body := http.StatusMethodNotAllowed, "method not allowed"
+		if req.Method == http.MethodGet {
+			status = http.StatusOK
+			body = `<!doctype html><html lang="en"><meta charset="utf-8"><title>Public Enrollment</title><h1>Public Enrollment</h1><p>Public enrollment is not configured.</p></html>`
+			nativeRuntime.Lock()
+			origin := ""
+			if r := nativeRuntime.current; r != nil {
+				origin = r.config.PublicOrigin
+			}
+			nativeRuntime.Unlock()
+			// Resource routes are unauthenticated. Publish only the public URL,
+			// never configuration, credentials, or enrollment/session state.
+			if origin != "" {
+				body = `<!doctype html><html lang="en"><meta charset="utf-8"><title>Public Enrollment</title><h1>Public Enrollment</h1><p><a rel="noreferrer" href="` + html.EscapeString(origin) + `/">Open public enrollment</a></p></html>`
+			}
+		}
+		return json.Marshal(map[string]any{"ok": true, "result": struct {
+			StatusCode int
+			Headers    http.Header
+			Body       []byte
+		}{status, http.Header{"Content-Type": {"text/html; charset=utf-8"}, "Cache-Control": {"no-store"}, "X-Content-Type-Options": {"nosniff"}, "Content-Security-Policy": {"default-src 'none'; base-uri 'none'; frame-ancestors 'self'"}, "Referrer-Policy": {"no-referrer"}}, []byte(body)}})
+	}
 	if method != "plugin.register" && method != "plugin.reconfigure" {
 		return errorEnvelope("unknown_method", "unsupported plugin method"), nil
 	}
@@ -168,5 +199,5 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 	for _, f := range [][2]string{{"listen", "HTTP bind address; default 0.0.0.0:8318"}, {"public_origin", "Exact public HTTPS origin without trailing slash"}, {"cpa_url", "Private CPA management origin; default http://127.0.0.1:8317"}, {"management_key_file", "Absolute path to mounted management key file (not the key)"}, {"state_dir", "Absolute private persistent directory (0700)"}} {
 		fields = append(fields, map[string]string{"Name": f[0], "Type": "string", "Description": f[1]})
 	}
-	return json.Marshal(map[string]any{"ok": true, "result": map[string]any{"schema_version": schemaVersion, "metadata": map[string]any{"Name": "Public Enrollment", "Version": "0.1.0", "Author": "NotRllyRn", "ConfigFields": fields}, "capabilities": map[string]bool{}}})
+	return json.Marshal(map[string]any{"ok": true, "result": map[string]any{"schema_version": schemaVersion, "metadata": map[string]any{"Name": "Public Enrollment", "Version": "0.1.0", "Author": "NotRllyRn", "GitHubRepository": "https://github.com/NotRllyRn/cpa-public-enrollment", "ConfigFields": fields}, "capabilities": map[string]bool{"management_api": true}}})
 }
