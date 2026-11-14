@@ -96,10 +96,13 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		sessionError(w, 503, "service_updating", "Service is updating. Check sign-in status shortly; do not start another sign-in while saving.")
 		return
 	}
-	if r.Method == "GET" && (r.URL.Path == "/" || r.URL.Path == "/app.js") {
+	if r.Method == "GET" && (r.URL.Path == "/" || r.URL.Path == "/app.js" || r.URL.Path == "/enroll.css") {
 		if r.URL.Path == "/" {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			io.WriteString(w, page)
+		} else if r.URL.Path == "/enroll.css" {
+			w.Header().Set("Content-Type", "text/css; charset=utf-8")
+			io.WriteString(w, stylesheet)
 		} else {
 			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 			io.WriteString(w, script)

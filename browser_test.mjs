@@ -2,11 +2,12 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-const source=readFileSync(new URL('./page.go',import.meta.url),'utf8').split('const script = `')[1].split('`')[0];
+const source=readFileSync(new URL('./web/app.js',import.meta.url),'utf8');
+const html=readFileSync(new URL('./web/index.html',import.meta.url),'utf8');
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 function browser({supported=false,reply}={}) {
  const elements=new Map(); const calls=[];
- const context=vm.createContext({document:{getElementById(id){if(!elements.has(id))elements.set(id,{checked:false});return elements.get(id);}}, navigator:supported?{locks:{request:async(_name,fn)=>fn()}}:{}, AbortSignal, setTimeout, setInterval(){}, fetch:async(url,options)=>{
+ const context=vm.createContext({document:{getElementById(id){if(!elements.has(id))elements.set(id,{parentElement:{dataset:{}}});return elements.get(id);}}, navigator:supported?{locks:{request:async(_name,fn)=>fn()}}:{}, AbortSignal, setTimeout, setInterval(){}, fetch:async(url,options)=>{
   const data=JSON.parse(options.body); calls.push({url,options,data});
   const response=reply?await reply(url,data):{device_auth_id:'id',user_code:'code'};
   return {ok:!response.error,status:response.error?409:200,json:async()=>response};
@@ -40,8 +41,8 @@ test('expiry hides code and stops polling until explicit restart rotates CSRF',a
  await b.elements.get('start').onclick();
  assert.deepEqual(b.calls.map(c=>c.url),['/session','/restart']);
  assert.equal(b.calls[1].data.CSRF,'old-csrf');
- assert.equal(b.elements.get('consent').checked,false);
- assert.equal(b.elements.get('start').disabled,true);
+ assert.equal(b.elements.has('consent'),false);
+ assert.equal(b.elements.get('start').disabled,false);
  assert.equal(b.run('csrf'),'new-csrf');
 });
 test('lost cookie state shows service-updated warning without silently creating a session',async()=>{
@@ -88,4 +89,35 @@ test('terminal and operator-review states never offer restart or keep device cod
   assert.equal(b.calls.length,1); assert.equal(b.elements.get('start').disabled,true);
   assert.equal(b.elements.get('instructions').hidden,true); assert.equal(b.elements.get('code').textContent,'');
  }
+});
+
+test('idle initialization and status checks never automatically start sign-in', async()=>{
+ const b=browser({supported:true,reply:()=>({status:'idle',csrf:'one'})});
+ await settle(); await b.run('tick()');
+ assert.deepEqual(b.calls.map(c=>c.url),['/session','/status']);
+ assert.equal(b.elements.get('start').disabled,false);
+ await b.elements.get('start').onclick();
+ const start=b.calls.find(c=>c.url==='/start');
+ assert.equal(start.data.Consent,true);
+});
+test('all flow states have clear headings, actions and code visibility', async()=>{
+ for(const status of ['idle','creating','waiting','saving','verifying','complete','duplicate','operator-review','error','expired']) {
+  const b=browser({supported:true,reply:()=>({status,csrf:'one',user_code:'CODE'})});
+  await settle();
+  assert.ok(b.elements.get('state-title').textContent);
+  assert.ok(b.elements.get('status').textContent);
+  assert.equal(b.elements.get('instructions').hidden,status!=='waiting');
+  assert.equal(b.elements.get('start').disabled,!['idle','expired'].includes(status));
+ }
+});
+test('visible authorization notice and native expandable disclosure replace checkbox',()=>{
+ assert.doesNotMatch(html,/type="checkbox"|id="consent"/);
+ assert.match(html,/By starting, you allow this operator/);
+ assert.match(html,/<details class="learn-more">\s*<summary>What am I authorizing\?<\/summary>/);
+ assert.doesNotMatch(html,/<details[^>]*\sopen[\s>]/);
+ assert.match(html,/stores and refreshes credentials/);
+ assert.match(html,/operator controls that usage/);
+ assert.match(html,/never enter your OpenAI password here/);
+ assert.match(html,/revoke access/);
+ assert.match(html,/aria-live="polite"/);
 });
