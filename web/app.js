@@ -36,7 +36,7 @@ const messages = {
  waiting:'Waiting for your approval on OpenAI’s website.',
  expired:'The old code can no longer be used. Reset this session, then review access before starting again. Resetting does not create a code.',
  saving:'Saving your account. Keep this tab open. Do not start another sign-in.',
- verifying:'Checking that CPA adopted your account. This does not test actual Codex requests. Do not start another sign-in.',
+ verifying:'Checking that CPA adopted your account. Do not start another sign-in.',
  complete:'Your credentials were accepted by CPA. The operator can now use your Codex access. You may close this tab.',
  duplicate:'This account is already connected. No new enrollment was added. If this is unexpected, contact the operator before trying again.',
  'operator-review':'We could not confirm the final result. Do not enroll again. Contact the person who shared this link.',

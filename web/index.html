@@ -12,9 +12,7 @@
 <main>
   <article class="card" aria-labelledby="title">
     <header>
-      <p class="kicker">CPA enrollment</p>
-      <h1 id="title">Connect Codex to your operator</h1>
-      <p class="operator">Operator: <span id="operator-name">{{OPERATOR_NAME}}</span></p>
+      <h1 id="title">Connect Codex</h1>
       <ol class="progress" aria-label="Connection stages">
         <li id="stage-review">1. Review access</li>
         <li id="stage-approve">2. Approve at OpenAI</li>
@@ -25,8 +23,7 @@
       <h2 id="state-title" tabindex="-1">Checking sign-in status</h2>
       <p id="status" role="status" aria-live="polite" aria-atomic="true">Checking whether a sign-in is already in progress. No new code is being requested.</p>
       <div class="notice" id="disclosure" hidden>
-        <p>By selecting Authorize and start, you allow this operator to use your Codex access and available usage, and to keep that access until you revoke it.</p>
-        <p class="small">Only continue if you trust the operator who shared this link.</p>
+        <p>By selecting Authorize and start, you allow this operator to use your Codex access and available usage.</p>
       </div>
       <div id="instructions" hidden>
         <p>Copy your code, then enter it on the OpenAI page.</p>
@@ -47,10 +44,8 @@
       <summary>How access works</summary>
       <div>
         <p><strong>Access.</strong> The operator controls how your Codex access and available usage are used.</p>
-        <p><strong>Storage.</strong> This service stores and refreshes credentials for ongoing access.</p>
-        <p><strong>Approval.</strong> Approve only on OpenAI’s website. You never enter your OpenAI password here.</p>
-        <p>Manage connected access in your OpenAI account</p>
-        <p><strong>Who runs this?</strong> The operator name is supplied by the service operator, not verified by OpenAI. For help, contact the person who shared this link.</p>
+        <p><strong>How to stop access?</strong> Manage connected access in your OpenAI account</p>
+        <p><strong>Who runs this?</strong> <span id="operator-name">{{OPERATOR_NAME}}</span>. The operator name is supplied by the service operator, not verified by OpenAI. For help, contact the person who shared this link.</p>
       </div>
     </details>
     <details class="learn-more">
@@ -58,7 +53,7 @@
       <div>
         <p><strong>1. Review.</strong> Read the access terms and select Authorize and start.</p>
         <p><strong>2. Approve.</strong> Copy the code and approve access on the displayed OpenAI destination.</p>
-        <p><strong>3. Return.</strong> Come back here while the service saves and confirms your connection. Confirmation means CPA accepted the credentials; it does not test actual Codex requests.</p>
+        <p><strong>3. Return.</strong> Come back here while the service saves and confirms your connection. Confirmation means CPA accepted the credentials.</p>
       </div>
     </details>
     <footer>Independently operated. Not affiliated with OpenAI.</footer>

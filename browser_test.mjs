@@ -126,10 +126,11 @@ test('explicit authorization, progressive disclosure and exact stopping-access t
  assert.match(html,/By selecting Authorize and start, you allow this operator/);
  assert.match(html,/<details class="learn-more">\s*<summary>How access works<\/summary>/);
  assert.doesNotMatch(html,/<details[^>]*\sopen[\s>]/);
- assert.match(html,/stores and refreshes credentials/);
+ assert.doesNotMatch(html,/stores and refreshes credentials|never enter your OpenAI password here|until you revoke it|Only continue if you trust|it does not test actual Codex requests/);
+ assert.match(html,/<h1 id="title">Connect Codex<\/h1>/);
+ assert.doesNotMatch(html,/<p class="kicker">|<p class="operator">/);
  assert.match(html,/operator controls how your Codex access/);
- assert.match(html,/never enter your OpenAI password here/);
- assert.match(html,/<p>Manage connected access in your OpenAI account<\/p>/);
+ assert.match(html,/<p><strong>How to stop access\?<\/strong> Manage connected access in your OpenAI account<\/p>/);
  assert.doesNotMatch(html,/security settings|removing.*stored|promise of revocation|Ask the operator about/);
  assert.match(html,/Opening the page alone does not approve access/);
  assert.match(html,/aria-live="polite"/);
