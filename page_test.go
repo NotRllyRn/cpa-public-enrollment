@@ -1,15 +1,35 @@
 package main
 
 import (
+	"html"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
+func TestOperatorNameIsPlainText(t *testing.T) {
+	for _, name := range []string{"", "  ", "Example Operator", `<img src=x onerror=alert(1)> & \"quoted\" 'name'`, "{{OPERATOR_NAME}}"} {
+		a := testApp(t)
+		a.operatorName = name
+		w := httptest.NewRecorder()
+		a.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+		want := strings.TrimSpace(name)
+		if want == "" {
+			want = "Not specified"
+		}
+		if !strings.Contains(w.Body.String(), `<span id="operator-name">`+html.EscapeString(want)+`</span>`) {
+			t.Fatalf("operator name not escaped: %q", name)
+		}
+		if strings.Contains(w.Body.String(), "<img") {
+			t.Fatal("operator name became markup")
+		}
+	}
+}
+
 func TestEmbeddedEnrollmentAssets(t *testing.T) {
 	a := testApp(t)
 	for _, asset := range []struct{ path, contentType, body string }{
-		{"/", "text/html; charset=utf-8", page},
+		{"/", "text/html; charset=utf-8", enrollmentPage("")},
 		{"/app.js", "text/javascript; charset=utf-8", script},
 		{"/enroll.css", "text/css; charset=utf-8", stylesheet},
 	} {

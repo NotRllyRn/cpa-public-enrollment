@@ -32,6 +32,7 @@ type pluginConfig struct {
 	CPAURL            string `yaml:"cpa_url"`
 	ManagementKeyFile string `yaml:"management_key_file"`
 	StateDir          string `yaml:"state_dir"`
+	OperatorName      string `yaml:"operator_name"`
 }
 type runningPlugin struct {
 	config pluginConfig
@@ -88,7 +89,7 @@ func configure(raw []byte) error {
 	}
 	if r := nativeRuntime.current; r != nil {
 		old := r.config
-		if old.Listen != c.Listen || old.PublicOrigin != c.PublicOrigin || old.CPAURL != c.CPAURL || old.ManagementKeyFile != c.ManagementKeyFile || old.StateDir != c.StateDir {
+		if old.Listen != c.Listen || old.PublicOrigin != c.PublicOrigin || old.CPAURL != c.CPAURL || old.ManagementKeyFile != c.ManagementKeyFile || old.StateDir != c.StateDir || old.OperatorName != c.OperatorName {
 			return errors.New("runtime configuration changes require CPA restart")
 		}
 		// The host rolls back a quiesced image with plugin.reconfigure and
@@ -106,7 +107,7 @@ func configure(raw []byte) error {
 	if device.prepare() != nil {
 		return errors.New("state_dir must be private and writable (0700)")
 	}
-	a := &app{sessions: make(map[string]*flow), origin: c.PublicOrigin, device: device, management: NewManagement(c.CPAURL, string(key))}
+	a := &app{sessions: make(map[string]*flow), origin: c.PublicOrigin, operatorName: c.OperatorName, device: device, management: NewManagement(c.CPAURL, string(key))}
 	r := &runningPlugin{config: c, app: a}
 	if err := r.listen(); err != nil {
 		return err
@@ -257,7 +258,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return errorEnvelope("configuration_error", err.Error()), nil
 	}
 	fields := []map[string]string{}
-	for _, f := range [][2]string{{"listen", "HTTP bind address; default 0.0.0.0:8318"}, {"public_origin", "Exact public HTTPS origin without trailing slash"}, {"cpa_url", "Private CPA management origin; default http://127.0.0.1:8317"}, {"management_key_file", "Absolute path to mounted management key file (not the key)"}, {"state_dir", "Absolute private persistent directory (0700)"}} {
+	for _, f := range [][2]string{{"listen", "HTTP bind address; default 0.0.0.0:8318"}, {"public_origin", "Exact public HTTPS origin without trailing slash"}, {"cpa_url", "Private CPA management origin; default http://127.0.0.1:8317"}, {"management_key_file", "Absolute path to mounted management key file (not the key)"}, {"state_dir", "Absolute private persistent directory (0700)"}, {"operator_name", "Optional public operator display name; plain text, requires CPA restart to change"}} {
 		fields = append(fields, map[string]string{"Name": f[0], "Type": "string", "Description": f[1]})
 	}
 	return json.Marshal(map[string]any{"ok": true, "result": map[string]any{"schema_version": schemaVersion, "metadata": map[string]any{"Name": "Public Enrollment", "Version": "0.1.0", "Author": "NotRllyRn", "GitHubRepository": "https://github.com/NotRllyRn/cpa-public-enrollment", "ConfigFields": fields}, "capabilities": map[string]bool{"management_api": true}}})

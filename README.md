@@ -16,6 +16,7 @@ export ENROLL_CPA_URL=http://cpa.internal:8317
 export ENROLL_CPA_KEY_FILE=/run/secrets/cpa-management-key
 export ENROLL_STATE_DIR=/var/lib/cpa-enrollment
 # Optional: ENROLL_LISTEN=0.0.0.0:8318 (default)
+# Optional: ENROLL_OPERATOR_NAME="Example Operator" (plain text; restart to change)
 go run .
 ```
 
@@ -34,4 +35,6 @@ go vet ./...
 node --test browser_test.mjs
 ```
 
-Tests use mocked transports, not real login requests.
+Tests use mocked transports, not real login requests. Optional real-browser checks: `node --test browser_ui_test.mjs` with Playwright and Chromium installed (`PLAYWRIGHT_MODULE` can point to an installed module entry; `ENROLL_BROWSER_ARTIFACTS` saves screenshots).
+
+OpenAI sign-in stays locked until the browser successfully copies the current code; clipboard access is required. No code is created before explicit authorization.

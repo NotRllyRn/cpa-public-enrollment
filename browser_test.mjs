@@ -5,15 +5,26 @@ import vm from 'node:vm';
 const source=readFileSync(new URL('./web/app.js',import.meta.url),'utf8');
 const html=readFileSync(new URL('./web/index.html',import.meta.url),'utf8');
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
-function browser({supported=false,reply}={}) {
- const elements=new Map(); const calls=[];
- const context=vm.createContext({document:{getElementById(id){if(!elements.has(id))elements.set(id,{parentElement:{dataset:{}}});return elements.get(id);}}, navigator:supported?{locks:{request:async(_name,fn)=>fn()}}:{}, AbortSignal, setTimeout, setInterval(){}, fetch:async(url,options)=>{
+function browser({supported=false,reply,writeText}={}) {
+ const elements=new Map(), calls=[], clipboard=[];
+ const document={getElementById(id){
+  if(!elements.has(id)) {
+   const attributes=new Map(); let content='';
+   elements.set(id, {dataset:{}, hidden:false, writes:0,
+    get textContent(){return content;}, set textContent(value){this.writes++;content=value;},
+    setAttribute(name,value){attributes.set(name,value);},removeAttribute(name){attributes.delete(name);},getAttribute(name){return attributes.get(name)??null;},
+    focus(){document.activeElement=this;},closest(){return null;}
+   });
+  }
+  return elements.get(id);
+ }};
+ const context=vm.createContext({document, navigator:supported?{locks:{request:async(_name,fn)=>fn()},clipboard:{writeText:async text=>{clipboard.push(text);if(writeText)await writeText(text);}}}:{}, AbortSignal, setTimeout, setInterval(){}, fetch:async(url,options)=>{
   const data=JSON.parse(options.body); calls.push({url,options,data});
   const response=reply?await reply(url,data):{device_auth_id:'id',user_code:'code'};
   return {ok:!response.error,status:response.error?409:200,json:async()=>response};
  }});
  vm.runInContext(source,context);
- return {context,calls,elements,run:code=>vm.runInContext(code,context)};
+ return {context,calls,elements,clipboard,run:code=>vm.runInContext(code,context)};
 }
 test('device transport creates and polls directly to OpenAI with no cookies',async()=>{
  const {run,calls}=browser();
@@ -36,7 +47,7 @@ test('expiry hides code and stops polling until explicit restart rotates CSRF',a
  await settle();
  assert.equal(b.elements.get('instructions').hidden,true);
  assert.equal(b.elements.get('code').textContent,'');
- assert.equal(b.elements.get('start').textContent,'Start new sign-in');
+ assert.equal(b.elements.get('start').textContent,'Reset expired sign-in');
  await b.run('tick()'); assert.equal(b.calls.length,1);
  await b.elements.get('start').onclick();
  assert.deepEqual(b.calls.map(c=>c.url),['/session','/restart']);
@@ -50,7 +61,7 @@ test('lost cookie state shows service-updated warning without silently creating 
  await settle(); await b.run('tick()');
  assert.equal(b.calls.length,1); assert.match(b.elements.get('status').textContent,/Service updated/);
  assert.doesNotMatch(b.elements.get('status').textContent,/reload/i);
- assert.equal(b.elements.get('start').textContent,'Start new sign-in');
+ assert.equal(b.elements.get('start').textContent,'Reset session to review access');
  await b.elements.get('start').onclick();
  assert.equal(b.calls[1].url,'/restart'); assert.equal(b.run('csrf'),'recovered');
 });
@@ -110,14 +121,103 @@ test('all flow states have clear headings, actions and code visibility', async()
   assert.equal(b.elements.get('start').disabled,!['idle','expired'].includes(status));
  }
 });
-test('visible authorization notice and native expandable disclosure replace checkbox',()=>{
+test('explicit authorization, progressive disclosure and exact stopping-access text',()=>{
  assert.doesNotMatch(html,/type="checkbox"|id="consent"/);
- assert.match(html,/By starting, you allow this operator/);
- assert.match(html,/<details class="learn-more">\s*<summary>What am I authorizing\?<\/summary>/);
+ assert.match(html,/By selecting Authorize and start, you allow this operator/);
+ assert.match(html,/<details class="learn-more">\s*<summary>How access works<\/summary>/);
  assert.doesNotMatch(html,/<details[^>]*\sopen[\s>]/);
  assert.match(html,/stores and refreshes credentials/);
- assert.match(html,/operator controls that usage/);
+ assert.match(html,/operator controls how your Codex access/);
  assert.match(html,/never enter your OpenAI password here/);
- assert.match(html,/revoke access/);
+ assert.match(html,/<p>Manage connected access in your OpenAI account<\/p>/);
+ assert.doesNotMatch(html,/security settings|removing.*stored|promise of revocation|Ask the operator about/);
+ assert.match(html,/Opening the page alone does not approve access/);
  assert.match(html,/aria-live="polite"/);
+});
+
+const waiting={status:'waiting',csrf:'one',user_code:'CURRENT'};
+function assertGate(b,unlocked) {
+ const link=b.elements.get('open-signin');
+ assert.equal(link.getAttribute('aria-disabled'),String(!unlocked));
+ assert.equal(link.getAttribute('href'),unlocked?'https://auth.openai.com/codex/device':null);
+ assert.equal(link.tabIndex,unlocked?0:-1);
+}
+test('OpenAI link is locked until Copy succeeds for the current code, navigation never approves',async()=>{
+ const b=browser({supported:true,reply:()=>waiting}); await settle();
+ assertGate(b,false);
+ let prevented=false;
+ b.elements.get('open-signin').onclick({preventDefault(){prevented=true;}});
+ assert.equal(prevented,true);
+ await b.elements.get('copy').onclick();
+ assert.deepEqual(b.clipboard,['CURRENT']); assertGate(b,true);
+ assert.match(b.elements.get('copy-feedback').textContent,/Code copied/);
+ b.elements.get('open-signin').onclick({preventDefault(){throw Error('successful copy must unlock');}});
+ assert.deepEqual(b.calls.map(c=>c.url),['/session']);
+ assert.equal(b.elements.get('task').dataset.state,'waiting');
+});
+test('clipboard failure or missing API keeps OpenAI locked and gives retry advice',async()=>{
+ let fail=true;
+ const b=browser({supported:true,reply:()=>waiting,writeText:()=>{if(fail)throw Error('Permission denied');}}); await settle();
+ await b.elements.get('copy').onclick(); assertGate(b,false);
+ assert.equal(b.elements.get('copy').getAttribute('aria-disabled'),'false');
+ assert.match(b.elements.get('copy-feedback').textContent,/Allow clipboard access.*Copy code to retry/);
+ fail=false; await b.elements.get('copy').onclick(); assertGate(b,true);
+ // A new failed copy must not retain an earlier successful gate.
+ b.run('navigator.clipboard = undefined');
+ await b.elements.get('copy').onclick(); assertGate(b,false);
+ assert.match(b.elements.get('copy-feedback').textContent,/stays locked/);
+});
+test('code and session changes each require a successful re-copy, same polls do not',async()=>{
+ const b=browser({supported:true,reply:()=>waiting}); await settle();
+ await b.elements.get('copy').onclick();
+ const statusWrites=b.elements.get('status').writes;
+ const copyWrites=b.elements.get('copy-feedback').writes;
+ await b.run('show({status:"waiting",csrf:"one",user_code:"CURRENT"})');
+ assertGate(b,true);
+ assert.equal(b.elements.get('status').writes,statusWrites);
+ assert.equal(b.elements.get('copy-feedback').writes,copyWrites);
+ await b.run('show({status:"waiting",csrf:"one",user_code:"OTHER"})'); assertGate(b,false);
+ await b.elements.get('copy').onclick(); assertGate(b,true);
+ await b.run('show({status:"waiting",csrf:"two",user_code:"OTHER"})'); assertGate(b,false);
+ await b.elements.get('copy').onclick(); assertGate(b,true);
+ await b.run('show({status:"saving",csrf:"two"})'); assertGate(b,false);
+ assert.equal(b.elements.get('instructions').hidden,true);
+});
+test('late clipboard success never unlocks a changed session or code',async()=>{
+ for(const change of [
+  'show({status:"waiting",csrf:"one",user_code:"NEW"})',
+  'show({status:"waiting",csrf:"two",user_code:"CURRENT"})',
+  'show({status:"expired",csrf:"one"}); show({status:"waiting",csrf:"one",user_code:"CURRENT"})'
+ ]) {
+  let resolve;
+  const b=browser({supported:true,reply:()=>waiting,writeText:()=>new Promise(r=>resolve=r)}); await settle();
+  const copying=b.elements.get('copy').onclick(); assertGate(b,false);
+  await b.run(change); resolve(); await copying; assertGate(b,false);
+  assert.equal(b.elements.get('copy').getAttribute('aria-disabled'),'false');
+ }
+});
+test('transport interruption is not a terminal save error; checking restores state but requires re-copy',async()=>{
+ const b=browser({supported:true,reply:()=>waiting}); await settle();
+ await b.elements.get('copy').onclick();
+ await b.run('failure(new TypeError("Failed to fetch"))');
+ assertGate(b,false); assert.equal(b.elements.get('task').dataset.state,'network');
+ assert.match(b.elements.get('status').textContent,/result is unknown/);
+ assert.equal(b.elements.get('resume').hidden,false);
+ assert.equal(b.elements.get('start').hidden,true);
+ await b.elements.get('resume').onclick(); assertGate(b,false);
+ await b.run('failure(Object.assign(new Error("OpenAI request failed"),{code:"openai_request_failed"}))');
+ assert.equal(b.elements.get('task').dataset.state,'openai_request_failed');
+ assert.match(b.elements.get('status').textContent,/OpenAI request failed/);
+ // DOMException timeout numeric codes are transport failures, not server errors.
+ await b.run('failure(Object.assign(new Error("aborted"),{code:23}))');
+ assert.equal(b.elements.get('task').dataset.state,'network');
+});
+test('state-specific actions and disclosure visibility do not offer terminal retries',async()=>{
+ for(const status of ['idle','creating','waiting','saving','verifying','complete','duplicate','operator-review','error','expired']) {
+  const b=browser({supported:true,reply:()=>({...waiting,status})}); await settle();
+  assert.equal(b.elements.get('disclosure').hidden,status!=='idle');
+  assert.equal(b.elements.get('start').hidden,!['idle','expired'].includes(status));
+  assert.equal(b.elements.get('resume').hidden,true);
+  assert.equal(b.calls.some(c=>c.url==='/start'),false);
+ }
 });

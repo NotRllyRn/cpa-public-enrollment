@@ -21,57 +21,139 @@ const browserAuth = {
  async post(path, data) {
   const r = await fetch('https://auth.openai.com'+path, {method:'POST', redirect:'error', credentials:'omit', referrerPolicy:'no-referrer', headers:{'Content-Type':'application/json'},body:JSON.stringify(data), signal:AbortSignal.timeout(15000)});
   if (r.status === 403 || r.status === 404) return null;
-  if (!r.ok) throw new Error('OpenAI request failed. Check sign-in status; code creation is not automatically retried.');
+  if (!r.ok) {
+   const e = new Error('OpenAI request failed. Check sign-in status; code creation is not automatically retried.');
+   e.code = 'openai_request_failed'; throw e;
+  }
   return r.json();
  },
  create() {return this.post('/api/accounts/deviceauth/usercode', {client_id:'app_EMoamEEZ73f0CkXaXp7hrann'});},
  poll(s) {return this.post('/api/accounts/deviceauth/token', {device_auth_id:s.device_auth_id,user_code:s.user_code});}
 };
 const messages = {
- idle:'Ready to start sign-in.', creating:'Creating sign-in code…', waiting:'Waiting for approval.',
- expired:'This sign-in expired after 15 minutes. Start a new sign-in to get a new code.',
- saving:'Saving your account. Do not start another sign-in.', verifying:'Checking that CPA adopted your account. Do not start another sign-in.',
- complete:'Your account was connected successfully. You may close this tab.', duplicate:'This account is already present. Contact the operator if needed.',
- 'operator-review':'Saving needs operator review. Do not enroll again; contact the operator.',
+ idle:'You’ll approve access on OpenAI’s website, then return here.',
+ creating:'No approval has happened yet. Wait here; we will not automatically request another code.',
+ waiting:'Waiting for your approval on OpenAI’s website.',
+ expired:'The old code can no longer be used. Reset this session, then review access before starting again. Resetting does not create a code.',
+ saving:'Saving your account. Keep this tab open. Do not start another sign-in.',
+ verifying:'Checking that CPA adopted your account. This does not test actual Codex requests. Do not start another sign-in.',
+ complete:'Your credentials were accepted by CPA. The operator can now use your Codex access. You may close this tab.',
+ duplicate:'This account is already connected. No new enrollment was added. If this is unexpected, contact the operator before trying again.',
+ 'operator-review':'We could not confirm the final result. Do not enroll again. Contact the person who shared this link.',
  error:'Sign-in could not be saved. Contact the operator before trying again.'
 };
 const titles = {
- idle:'Ready to connect', creating:'Creating your code', waiting:'Approve access at OpenAI',
- saving:'Saving your account', verifying:'Verifying connection', complete:'Account connected',
- duplicate:'Account already connected', 'operator-review':'Contact the operator',
- error:'Sign-in needs attention', expired:'Sign-in expired'
+ idle:'Review ongoing access', creating:'Creating your sign-in code', waiting:'Finish on OpenAI',
+ saving:'Saving your account', verifying:'Confirming your connection', complete:'Codex connected',
+ duplicate:'Account already connected', 'operator-review':'The operator needs to check this',
+ error:'Sign-in needs attention', expired:'This sign-in expired'
 };
-function hideCode() { $('instructions').hidden = true; $('code').textContent = ''; }
+// Keep the DOM (including open disclosures and keyboard focus) stable on polls.
+// Updating live text only when it changes avoids repeating identical announcements.
+function text(id, value) { if ($(id).textContent !== value) $(id).textContent = value; }
+function restoreFocus(previous) {
+ // Browsers may blur to <body> as soon as a focused control is hidden.
+ if (previous?.closest('[hidden]')) $('state-title').focus();
+}
+const destination = 'https://auth.openai.com/codex/device';
+let codeKey = '', copyGeneration = 0, copied = false, copyPending = false;
+function renderCopyGate() {
+ const link = $('open-signin');
+ link.setAttribute('aria-disabled', String(!copied));
+ link.tabIndex = copied ? 0 : -1;
+ if (copied) link.setAttribute('href', destination); else link.removeAttribute('href');
+}
+function resetCopy(key = '') {
+ if (key === codeKey) return;
+ const linkFocused = document.activeElement === $('open-signin');
+ codeKey = key; copyGeneration++; copied = false; copyPending = false;
+ $('copy').setAttribute('aria-disabled', 'false');
+ text('copy-feedback', key ? 'Copy this code to unlock OpenAI sign-in.' : '');
+ renderCopyGate();
+ if (key && linkFocused) $('copy').focus();
+}
+function hideCode() {
+ $('instructions').hidden = true; text('code', ''); resetCopy();
+}
+$('open-signin').onclick = event => {
+ if (!copied || !codeKey) event.preventDefault();
+ // Navigation never changes approval state or creates a new OAuth request.
+};
+$('copy').onclick = async () => {
+ if (!codeKey || copyPending) return;
+ const key = codeKey, generation = ++copyGeneration, code = $('code').textContent;
+ copied = false; copyPending = true; renderCopyGate();
+ // aria-disabled prevents duplicate work without discarding keyboard focus.
+ $('copy').setAttribute('aria-disabled', 'true');
+ text('copy-feedback', 'Copying code…');
+ try {
+  if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+  await navigator.clipboard.writeText(code);
+  if (key !== codeKey || generation !== copyGeneration) return;
+  copied = true; renderCopyGate();
+  text('copy-feedback', 'Code copied. Open OpenAI sign-in to enter it.');
+ } catch {
+  if (key !== codeKey || generation !== copyGeneration) return;
+  text('copy-feedback', 'Could not copy the code. Allow clipboard access in your browser, then select Copy code to retry. OpenAI sign-in stays locked until copying succeeds.');
+ } finally {
+  if (key === codeKey && generation === copyGeneration) {
+   copyPending = false; $('copy').setAttribute('aria-disabled', 'false');
+  }
+ }
+};
 function show(s) {
+ const focused = document.activeElement;
  if (s.csrf) csrf = s.csrf;
  recovery = s.status === 'expired';
  paused = recovery || ['complete','duplicate','operator-review','error'].includes(s.status);
- $('state-title').textContent = titles[s.status] || 'Sign-in status';
- $('status').textContent = messages[s.status] || s.status;
- $('status').parentElement.dataset.state = s.status;
- hideCode();
- if (s.status === 'waiting' && s.user_code) { $('instructions').hidden = false; $('code').textContent = s.user_code; }
- $('start').textContent = recovery ? 'Start new sign-in' : 'Start sign-in';
+ text('state-title', titles[s.status] || 'Sign-in status');
+ text('status', messages[s.status] || 'Check sign-in status before taking further action.');
+ $('task').dataset.state = s.status;
+ $('disclosure').hidden = s.status !== 'idle';
+ if (s.status === 'waiting' && s.user_code) {
+  $('instructions').hidden = false; text('code', s.user_code);
+  resetCopy(JSON.stringify([csrf, s.user_code]));
+ } else { hideCode(); }
+ text('start', recovery ? 'Reset expired sign-in' : 'Authorize and start');
  $('start').disabled = !(recovery || s.status === 'idle');
- $('resume').hidden = !paused;
+ $('start').hidden = $('start').disabled;
+ $('start').setAttribute('aria-disabled', String($('start').disabled));
+ $('start').setAttribute('aria-describedby', recovery ? 'status' : 'disclosure');
+ $('resume').hidden = true;
+ const stage = ['idle','creating','expired'].includes(s.status) ? 'review' : s.status === 'waiting' ? 'approve' : 'confirm';
+ for (const name of ['review','approve','confirm']) {
+  if (name === stage) $('stage-'+name).setAttribute('aria-current', 'step');
+  else $('stage-'+name).removeAttribute('aria-current');
+ }
+ restoreFocus(focused);
 }
 async function syncSession() {
  const s = await navigator.locks.request('cpa-session-bootstrap', () => api('/session'));
  show(s);
 }
 async function failure(e) {
- paused = true; hideCode(); $('start').disabled = true; $('resume').hidden = false;
- $('state-title').textContent = 'Sign-in needs attention';
- $('status').parentElement.dataset.state = e.code || 'error';
+ const focused = document.activeElement;
+ paused = true; recovery = false; hideCode();
+ $('disclosure').hidden = true;
+ $('start').disabled = true; $('start').hidden = true; $('resume').hidden = false;
+ $('start').setAttribute('aria-disabled', 'true');
  if (['session_changed','session_expired','session_active','stale_reservation','stale_approval'].includes(e.code)) {
-  try { await syncSession(); return; } catch(next) { e = next; }
+  try { await syncSession(); restoreFocus(focused); return; } catch(next) { e = next; }
  }
+ const structured = typeof e.code === 'string' && e.code !== '';
+ $('task').dataset.state = structured ? e.code : 'network';
+ text('state-title', structured ? 'Sign-in needs attention' : 'Connection interrupted');
+ text('status', structured ? e.message : 'The sign-in service or OpenAI could not be reached. The result is unknown; approval or saving may still be in progress. Check sign-in status. Do not start another sign-in.');
  if (e.code === 'session_lost') {
   csrf = undefined; recovery = true;
-  $('state-title').textContent = 'Sign-in session unavailable';
-  $('start').textContent = 'Start new sign-in'; $('start').disabled = false;
+  text('state-title', 'Your session is unavailable');
+  text('status', e.message + ' If you already approved at OpenAI, ask the operator to check the result before starting again. Resetting only returns to access review; it does not create a code.');
+  text('start', 'Reset session to review access');
+  $('start').setAttribute('aria-describedby', 'status');
+  $('start').disabled = false; $('start').hidden = false;
+  $('start').setAttribute('aria-disabled', 'false');
  }
- $('status').textContent = e.message || 'Connection interrupted. Check sign-in status before taking further action.';
+ restoreFocus(focused);
 }
 async function tick() {
  if (busy || paused) return;
@@ -98,7 +180,7 @@ $('resume').onclick = async () => {
 };
 $('start').onclick = async () => {
  if (busy || $('start').disabled) return;
- busy = true; $('start').disabled = true;
+ busy = true; $('start').setAttribute('aria-disabled', 'true');
  try {
   if (recovery) {
    const s = await navigator.locks.request('cpa-session-bootstrap', () => api('/restart'));
@@ -107,7 +189,10 @@ $('start').onclick = async () => {
   const s = await api('/start', {Consent:true}); show(s);
   if (s.status === 'creating' && s.lease) {
    const c = await browserAuth.create();
-   if (!c) throw new Error('OpenAI creation unavailable. Check sign-in status.');
+   if (!c) {
+    const e = new Error('OpenAI creation unavailable. Check sign-in status; a new code will not be requested automatically.');
+    e.code = 'openai_creation_unavailable'; throw e;
+   }
    show(await deliver('/created', {Lease:s.lease,ID:c.device_auth_id,Code:c.user_code || c.usercode,Interval:Number(c.interval)||5}));
   }
  } catch(e) { await failure(e); }
@@ -115,9 +200,9 @@ $('start').onclick = async () => {
 };
 (async () => {
  if (!navigator.locks || typeof AbortSignal === 'undefined' || !AbortSignal.timeout) {
-  $('start').disabled = true;
-  $('state-title').textContent = 'Browser not supported';
-  $('status').textContent='A browser with Web Locks and request timeout support is required. Use a current browser. No sign-in has been started.'; return;
+  $('start').disabled = true; $('start').hidden = true;
+  text('state-title', 'Use a supported browser');
+  text('status', 'A browser with Web Locks and request timeout support is required. Use a current browser. No sign-in has been started here.'); return;
  }
  try { await syncSession(); } catch(e) { await failure(e); }
  setInterval(tick, 2000);

@@ -39,7 +39,7 @@ func main() {
 	if d.prepare() != nil {
 		log.Fatal("private writable state directory required (0700)")
 	}
-	a := &app{sessions: make(map[string]*flow), origin: origin, device: d, management: NewManagement(base, string(key))}
+	a := &app{sessions: make(map[string]*flow), origin: origin, operatorName: os.Getenv("ENROLL_OPERATOR_NAME"), device: d, management: NewManagement(base, string(key))}
 	srv := &http.Server{Addr: env("ENROLL_LISTEN", "0.0.0.0:8318"), Handler: a, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

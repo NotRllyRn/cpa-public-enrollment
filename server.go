@@ -72,15 +72,16 @@ type flow struct {
 	Finished time.Time `json:"-"`
 }
 type app struct {
-	closing    bool
-	mu         sync.Mutex
-	sessions   map[string]*flow
-	origin     string
-	device     *Device
-	management *Management
-	adopt      sync.Mutex
-	wg         sync.WaitGroup
-	saveDone   <-chan struct{}
+	closing      bool
+	mu           sync.Mutex
+	sessions     map[string]*flow
+	origin       string
+	operatorName string
+	device       *Device
+	management   *Management
+	adopt        sync.Mutex
+	wg           sync.WaitGroup
+	saveDone     <-chan struct{}
 }
 
 func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -99,7 +100,7 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" && (r.URL.Path == "/" || r.URL.Path == "/app.js" || r.URL.Path == "/enroll.css") {
 		if r.URL.Path == "/" {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			io.WriteString(w, page)
+			io.WriteString(w, enrollmentPage(a.operatorName))
 		} else if r.URL.Path == "/enroll.css" {
 			w.Header().Set("Content-Type", "text/css; charset=utf-8")
 			io.WriteString(w, stylesheet)
