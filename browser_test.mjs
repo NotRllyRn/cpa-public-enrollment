@@ -35,6 +35,21 @@ test('device transport creates and polls directly to OpenAI with no cookies',asy
  assert.equal(calls[0].data.client_id,'app_EMoamEEZ73f0CkXaXp7hrann');
  assert.equal(calls[1].data.device_auth_id,'id');
 });
+test('terminal diagnostics are literal text and retain the no-retry warning',()=>{
+ const b=browser();
+ for(const status of ['error','operator-review']) {
+  b.run(`show({status:${JSON.stringify(status)},message:'Checking CPA inventory failed: HTTP 403 (Forbidden). <img src=x onerror=alert(1)>'})`);
+  assert.match(b.elements.get('status').textContent,/Checking CPA inventory failed: HTTP 403/);
+  assert.match(b.elements.get('status').textContent,/<img src=x/);
+  assert.equal(b.elements.get('start').hidden,true);
+  assert.equal(b.elements.get('instructions').hidden,true);
+ }
+});
+test('OpenAI failures show operation and status, never upstream body',async()=>{
+ const b=browser({reply:()=>({error:{message:'<html>SECRET member@example.test</html>'}})});
+ await assert.rejects(b.run('browserAuth.create()'),e=>/Creating OpenAI sign-in code failed: HTTP 409/.test(e.message)&&!e.message.includes('SECRET'));
+ await assert.rejects(b.run('browserAuth.poll({})'),e=>/Checking OpenAI device approval failed: HTTP 409/.test(e.message)&&!e.message.includes('member@'));
+});
 test('unsupported browser does not initialize or create a code',()=>{
  const {calls,elements}=browser();assert.equal(calls.length,0);assert.match(elements.get('status').textContent,/Web Locks/);
 });

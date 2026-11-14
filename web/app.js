@@ -19,13 +19,22 @@ async function api(path, data = {}) {
 // Only this transport contacts OpenAI. It never receives access/refresh tokens.
 const browserAuth = {
  async post(path, data) {
-  const r = await fetch('https://auth.openai.com'+path, {method:'POST', redirect:'error', credentials:'omit', referrerPolicy:'no-referrer', headers:{'Content-Type':'application/json'},body:JSON.stringify(data), signal:AbortSignal.timeout(15000)});
-  if (r.status === 403 || r.status === 404) return null;
-  if (!r.ok) {
-   const e = new Error('OpenAI request failed. Check sign-in status; code creation is not automatically retried.');
+  const operation = path.endsWith('/usercode') ? 'Creating OpenAI sign-in code' : 'Checking OpenAI device approval';
+  let r;
+  try { r = await fetch('https://auth.openai.com'+path, {method:'POST', redirect:'error', credentials:'omit', referrerPolicy:'no-referrer', headers:{'Content-Type':'application/json'},body:JSON.stringify(data), signal:AbortSignal.timeout(15000)}); } catch {
+   const e = new Error(operation + ' failed: OpenAI could not be reached or the request timed out. Check sign-in status; do not start another sign-in.');
    e.code = 'openai_request_failed'; throw e;
   }
-  return r.json();
+  // These responses mean approval is still pending only on the poll endpoint.
+  if ((r.status === 403 || r.status === 404) && path.endsWith('/token')) return null;
+  if (!r.ok) {
+   const e = new Error(operation + ' failed: HTTP ' + r.status + '. Check sign-in status; code creation is not automatically retried.');
+   e.code = 'openai_request_failed'; throw e;
+  }
+  try { return await r.json(); } catch {
+   const e = new Error(operation + ' failed: OpenAI returned invalid JSON. Check sign-in status before trying again.');
+   e.code = 'openai_request_failed'; throw e;
+  }
  },
  create() {return this.post('/api/accounts/deviceauth/usercode', {client_id:'app_EMoamEEZ73f0CkXaXp7hrann'});},
  poll(s) {return this.post('/api/accounts/deviceauth/token', {device_auth_id:s.device_auth_id,user_code:s.user_code});}
@@ -107,7 +116,8 @@ function show(s) {
  recovery = s.status === 'expired';
  paused = recovery || ['complete','duplicate','operator-review','error'].includes(s.status);
  text('state-title', titles[s.status] || 'Sign-in status');
- text('status', messages[s.status] || 'Check sign-in status before taking further action.');
+ const detail = ['error','operator-review'].includes(s.status) && typeof s.message === 'string' ? s.message + ' ' : '';
+ text('status', detail + (messages[s.status] || 'Check sign-in status before taking further action.'));
  $('task').dataset.state = s.status;
  $('disclosure').hidden = s.status !== 'idle';
  if (s.status === 'waiting' && s.user_code) {

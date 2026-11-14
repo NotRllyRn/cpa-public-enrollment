@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -26,25 +25,31 @@ func (m *Management) Call(ctx context.Context, method, path string, body, result
 	if body != nil {
 		data, err = json.Marshal(body)
 		if err != nil {
-			return err
+			return diagnostic("could not encode management request")
 		}
 	}
 	req, err := http.NewRequestWithContext(ctx, method, m.Base+"/v8/management"+path, bytes.NewReader(data))
 	if err != nil {
-		return err
+		return diagnostic("could not construct management request")
 	}
 	req.Header.Set("Authorization", "Bearer "+m.Key)
 	req.Header.Set("Content-Type", "application/json")
 	res, err := m.HTTP.Do(req)
 	if err != nil {
-		return fmt.Errorf("management unavailable")
+		if ctx.Err() != nil {
+			return diagnostic(safeReason(ctx.Err()))
+		}
+		return diagnostic("management service could not be reached")
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("management HTTP %d", res.StatusCode)
+		return httpFailure(res.StatusCode)
 	}
 	if result == nil {
 		return nil
 	}
-	return json.NewDecoder(io.LimitReader(res.Body, 4<<20)).Decode(result)
+	if err := json.NewDecoder(io.LimitReader(res.Body, 4<<20)).Decode(result); err != nil {
+		return diagnostic("management service returned invalid inventory JSON")
+	}
+	return nil
 }

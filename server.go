@@ -63,6 +63,7 @@ const lostSessionMessage = "Service updated or sign-in session is no longer avai
 type flow struct {
 	CSRF     string    `json:"csrf"`
 	Status   string    `json:"status"`
+	Message  string    `json:"message,omitempty"`
 	ID       string    `json:"device_auth_id,omitempty"`
 	Code     string    `json:"user_code,omitempty"`
 	Lease    string    `json:"lease,omitempty"`

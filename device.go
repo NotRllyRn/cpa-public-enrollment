@@ -43,16 +43,25 @@ func (d *Device) request(ctx context.Context, endpoint, content string, body []b
 	client.Timeout = 20 * time.Second
 	res, err := client.Do(req)
 	if err != nil {
-		return 0, errDevice
+		if ctx.Err() != nil {
+			return 0, diagnostic(safeReason(ctx.Err()))
+		}
+		return 0, diagnostic("OpenAI token service could not be reached")
 	}
 	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return res.StatusCode, nil
+	}
 	raw, err := io.ReadAll(io.LimitReader(res.Body, (1<<20)+1))
-	if err != nil || len(raw) > 1<<20 {
-		return 0, errDevice
+	if err != nil {
+		return res.StatusCode, diagnostic("could not read token response")
+	}
+	if len(raw) > 1<<20 {
+		return res.StatusCode, diagnostic("token response exceeded the size limit")
 	}
 	if res.StatusCode == 200 && out != nil {
 		if json.Unmarshal(raw, out) != nil {
-			return 0, errDevice
+			return res.StatusCode, diagnostic("token service returned invalid JSON")
 		}
 	}
 	return res.StatusCode, nil
@@ -161,60 +170,77 @@ func (d *Device) prepare() error {
 }
 
 // Never retry a write, even after restart. Pending files are recovery evidence, not a replay queue.
-func (d *Device) persist(name string, t *nativeToken) error {
+func (d *Device) persist(name string, t *nativeToken) (result error) {
+	defer func() {
+		if result != nil {
+			result = diagnostic("local credential write or sync failed: " + safeReason(result))
+		}
+	}()
 	if d.Dir == "" {
-		return errDevice
+		return diagnostic("recovery directory is not configured")
 	}
 	if err := os.MkdirAll(d.Dir, 0700); err != nil {
-		return errDevice
+		return err
 	}
 	info, err := os.Lstat(d.Dir)
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
-		return errDevice
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode().Perm()&0077 != 0 {
+		return diagnostic("recovery directory is not private or is not a directory")
 	}
 	f, err := os.OpenFile(filepath.Join(d.Dir, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		return errDevice
+		return err
 	}
 	err = json.NewEncoder(f).Encode(t)
 	if err == nil {
 		err = f.Sync()
 	}
 	closeErr := f.Close()
-	if err != nil || closeErr != nil {
-		return errDevice
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
 	}
 	dir, err := os.Open(d.Dir)
 	if err != nil {
-		return errDevice
+		return err
 	}
 	defer dir.Close()
-	return dir.Sync()
+	if err := dir.Sync(); err != nil {
+		return err
+	}
+	return nil
 }
 func (d *Device) checkPending(name, account, email string) error {
 	entries, err := os.ReadDir(d.Dir)
 	if err != nil {
-		return errDevice
+		return diagnostic("could not list pending credentials: " + safeReason(err))
 	}
 	for _, entry := range entries {
 		if entry.Name() == name || strings.HasPrefix(entry.Name(), ".probe-") {
 			continue
 		}
 		if entry.IsDir() {
-			return errDevice
+			return diagnostic("unexpected directory in pending credentials; duplicate checking is unsafe")
 		}
 		f, err := os.Open(filepath.Join(d.Dir, entry.Name()))
 		if os.IsNotExist(err) {
 			continue // A successful reconciliation may remove a pending file.
 		}
 		if err != nil {
-			return errDevice
+			return diagnostic("could not read an existing pending credential: " + safeReason(err))
 		}
 		var t nativeToken
 		err = json.NewDecoder(io.LimitReader(f, 1<<20)).Decode(&t)
 		_ = f.Close()
-		if err != nil || t.Account == "" || strings.TrimSpace(t.Email) == "" || sameMember(t.Account, t.Email, account, email) {
-			return errDevice
+		if err != nil || t.Account == "" || strings.TrimSpace(t.Email) == "" {
+			return diagnostic("an existing pending credential has unreadable or incomplete member identity; duplicate checking is unsafe")
+		}
+		if sameMember(t.Account, t.Email, account, email) {
+			return diagnostic("an earlier pending enrollment exists for this member; its outcome must be reviewed before another upload")
 		}
 	}
 	return nil
