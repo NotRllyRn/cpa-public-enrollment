@@ -51,12 +51,12 @@ func TestImportAdoption(t *testing.T) {
 				}
 				gets++
 				if duplicate {
-					return response(`{"files":[{"provider":"codex","account_id":"acct","name":"existing"}]}`), nil
+					return response(`{"files":[{"provider":"codex","account_id":"acct","email":" PERSON@example.com ","name":"existing"}]}`), nil
 				}
 				if gets == 1 {
-					return response(`{"files":[]}`), nil
+					return response(`{"files":[{"provider":"codex","account_id":"acct","email":"other@example.com","name":"existing"}]}`), nil
 				}
-				return response(fmt.Sprintf(`{"files":[{"name":%q,"provider":"codex","account_id":"acct","source":"file","adopted":true}]}`, name)), nil
+				return response(fmt.Sprintf(`{"files":[{"name":%q,"provider":"codex","account_id":"acct","email":"person@example.com","source":"file","adopted":true}]}`, name)), nil
 			})
 			s := &flow{Status: "saving"}
 			a.adopt.Lock()
@@ -74,7 +74,7 @@ func TestImportAdoption(t *testing.T) {
 }
 func TestPendingIsDurableAndNeverReplayed(t *testing.T) {
 	a := testApp(t)
-	tok := nativeToken{Account: "acct", Access: "secret"}
+	tok := nativeToken{Account: "acct", Email: "person@example.com", Access: "secret"}
 	if a.device.persist("pending.json", &tok) != nil {
 		t.Fatal("persist")
 	}
@@ -85,11 +85,14 @@ func TestPendingIsDurableAndNeverReplayed(t *testing.T) {
 	if a.device.persist("pending.json", &tok) == nil {
 		t.Fatal("overwrite")
 	}
-	if a.device.checkPending("other.json", "acct") == nil {
+	if a.device.checkPending("other.json", "acct", " PERSON@example.com ") == nil {
 		t.Fatal("pending duplicate")
 	}
-	if a.device.checkPending("other.json", "different") != nil {
+	if a.device.checkPending("other.json", "different", "person@example.com") != nil {
 		t.Fatal("unrelated account")
+	}
+	if a.device.checkPending("other.json", "acct", "other@example.com") != nil {
+		t.Fatal("different member in same workspace")
 	}
 	if _, err := a.device.request(context.Background(), "http://evil.example", "application/json", nil, nil); err == nil {
 		t.Fatal("arbitrary outbound accepted")

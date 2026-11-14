@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -16,7 +17,7 @@ func (a *app) inventory(ctx context.Context) ([]enrollmentCredential, error) {
 		return nil, errDevice
 	}
 	for _, c := range *v.Files {
-		if (c.Type == "codex" || c.Provider == "codex") && c.account() == "" {
+		if (c.Type == "codex" || c.Provider == "codex") && (c.account() == "" || strings.TrimSpace(c.Email) == "") {
 			return nil, errDevice
 		}
 	}
@@ -44,12 +45,12 @@ func (a *app) save(s *flow, code, verifier string) {
 	}
 	// Keep evidence on every uncertain outcome. Pending files are never replayed.
 	files, err := a.inventory(ctx)
-	if err != nil || a.device.checkPending(name, t.Account) != nil {
+	if err != nil || a.device.checkPending(name, t.Account, t.Email) != nil {
 		a.state(s, "operator-review")
 		return
 	}
 	for _, c := range files {
-		if c.account() == t.Account || c.Name == name || c.ID == name {
+		if sameMember(c.account(), c.Email, t.Account, t.Email) || c.Name == name || c.ID == name {
 			a.state(s, "duplicate")
 			return
 		}
@@ -60,7 +61,7 @@ func (a *app) save(s *flow, code, verifier string) {
 		files, err = a.inventory(ctx)
 		if err == nil {
 			for _, c := range files {
-				if c.Name == name && c.account() == t.Account && c.Source == "file" && c.Adopted {
+				if c.Name == name && sameMember(c.account(), c.Email, t.Account, t.Email) && c.Source == "file" && c.Adopted {
 					if os.Remove(filepath.Join(a.device.Dir, name)) != nil {
 						a.state(s, "operator-review")
 					} else {

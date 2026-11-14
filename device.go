@@ -110,6 +110,7 @@ type enrollmentCredential struct {
 	Provider string `json:"provider"`
 	Type     string `json:"type"`
 	Account  string `json:"account_id"`
+	Email    string `json:"email"`
 	Source   string `json:"source"`
 	Adopted  bool   `json:"adopted"`
 	Claims   struct {
@@ -118,6 +119,11 @@ type enrollmentCredential struct {
 			Account string `json:"chatgpt_account_id"`
 		} `json:"https://api.openai.com/auth"`
 	} `json:"id_token"`
+}
+
+// Account IDs can identify a shared workspace, not an individual member.
+func sameMember(account, email, otherAccount, otherEmail string) bool {
+	return account != "" && account == otherAccount && strings.TrimSpace(email) != "" && strings.EqualFold(strings.TrimSpace(email), strings.TrimSpace(otherEmail))
 }
 
 func (c enrollmentCredential) account() string {
@@ -185,7 +191,7 @@ func (d *Device) persist(name string, t *nativeToken) error {
 	defer dir.Close()
 	return dir.Sync()
 }
-func (d *Device) checkPending(name, account string) error {
+func (d *Device) checkPending(name, account, email string) error {
 	entries, err := os.ReadDir(d.Dir)
 	if err != nil {
 		return errDevice
@@ -207,7 +213,7 @@ func (d *Device) checkPending(name, account string) error {
 		var t nativeToken
 		err = json.NewDecoder(io.LimitReader(f, 1<<20)).Decode(&t)
 		_ = f.Close()
-		if err != nil || t.Account == "" || t.Account == account {
+		if err != nil || t.Account == "" || strings.TrimSpace(t.Email) == "" || sameMember(t.Account, t.Email, account, email) {
 			return errDevice
 		}
 	}
