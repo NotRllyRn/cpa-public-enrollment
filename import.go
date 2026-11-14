@@ -23,7 +23,14 @@ func (a *app) inventory(ctx context.Context) ([]enrollmentCredential, error) {
 	}
 	return *v.Files, nil
 }
-func (a *app) state(s *flow, status string) { a.mu.Lock(); s.Status = status; a.mu.Unlock() }
+func (a *app) state(s *flow, status string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s.Status = status
+	if status != "saving" && status != "verifying" {
+		s.Finished = time.Now()
+	}
+}
 func (a *app) save(s *flow, code, verifier string) {
 	// Independent from the HTTP request: shutdown waits for this bounded operation.
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)

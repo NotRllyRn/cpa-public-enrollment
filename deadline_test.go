@@ -6,7 +6,7 @@ import (
 )
 
 func TestExpiredFlowCannotAuthorize(t *testing.T) {
-	for _, status := range []string{"idle", "creating", "waiting", "verifying", "complete"} {
+	for _, status := range []string{"idle", "creating", "waiting", "saving", "verifying", "complete", "operator-review", "duplicate", "error"} {
 		t.Run(status, func(t *testing.T) {
 			a := testApp(t)
 			cookie, initial := bootstrap(t, a)
@@ -23,8 +23,12 @@ func TestExpiredFlowCannotAuthorize(t *testing.T) {
 			if w := request(a, "/status", in, cookie, a.origin); w.Code != 200 {
 				t.Fatal("result unavailable")
 			}
-			if s.Status != status || s.Lease != "lease" {
-				t.Fatal("expired flow mutated")
+			if status == "idle" || status == "creating" || status == "waiting" {
+				if s.Status != "expired" || s.Lease != "" {
+					t.Fatal("unfinished flow did not expire")
+				}
+			} else if s.Status != status || s.Lease != "lease" {
+				t.Fatal("save/result mutated")
 			}
 		})
 	}

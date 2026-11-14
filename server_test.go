@@ -55,7 +55,7 @@ func TestSecurity(t *testing.T) {
 			t.Fatal("origin")
 		}
 	}
-	if request(a, "/start", map[string]any{"Consent": true}, c, a.origin).Code != 403 {
+	if request(a, "/start", map[string]any{"Consent": true}, c, a.origin).Code != 409 {
 		t.Fatal("csrf")
 	}
 	if request(a, "/start", map[string]any{"CSRF": s.CSRF}, c, a.origin).Code != 400 {
@@ -144,7 +144,7 @@ func TestExpiry(t *testing.T) {
 	a := testApp(t)
 	c, s := bootstrap(t, a)
 	a.sessions[c.Value].Expires = time.Now().Add(-sessionGrace - time.Second)
-	if request(a, "/status", map[string]any{"CSRF": s.CSRF}, c, a.origin).Code != 403 {
+	if request(a, "/status", map[string]any{"CSRF": s.CSRF}, c, a.origin).Code != 409 {
 		t.Fatal("expired session accepted")
 	}
 }

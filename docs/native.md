@@ -20,9 +20,15 @@ state_dir: "/var/lib/cpa-enrollment"
 
 All five fields are strings. `listen` and `cpa_url` have the defaults shown. The other three are required. The origin must be exact HTTPS with no trailing slash, path, query, credentials or fragment. Both file/directory paths must be absolute. Keep the management key in a mounted 0600 file, never a config value. State must be private (0700) and writable. The CPA URL must resolve to a private management endpoint; network privacy is the operator's responsibility.
 
-Empty configuration is metadata-only discovery and does not start a listener. Nonempty configuration validates and binds synchronously, reporting errors to CPA. Binary replacement requires a controlled CPA restart; native hot replacement is not supported. Identical reconfiguration is a no-op; changes to any runtime field require CPA restart (including key-file path). Key-file contents are read at startup only. CPA-owned `enabled`, `priority`, and `store` fields are accepted; the host owns enable/disable lifecycle. The plugin advertises `management_api` and registers a Public Enrollment menu resource at `/v0/resource/plugins/public-enrollment/open`. CPA serves this resource without authentication; it contains only a plain link to the configured public enrollment origin (or an unconfigured message), never keys, state, or management operations. It does not embed an iframe or proxy enrollment routes: reverse proxy the enrollment listener directly with HTTPS, restricting direct access.
+Empty configuration is metadata-only discovery and does not start a listener. Nonempty configuration validates and binds synchronously, reporting errors to CPA. Identical live reconfiguration is a no-op; changes to any runtime field require CPA restart (including key-file path). Key-file contents are read at startup only. CPA-owned `enabled`, `priority`, and `store` fields are accepted; the host owns enable/disable lifecycle. The plugin advertises `management_api` and registers a Public Enrollment menu resource at `/v0/resource/plugins/public-enrollment/open`. CPA serves this resource without authentication; it contains only a plain link to the configured public enrollment origin (or an unconfigured message), never keys, state, or management operations. It does not embed an iframe or proxy enrollment routes: reverse proxy the enrollment listener directly with HTTPS, restricting direct access.
 
-Shutdown stops admission, shuts down HTTP, and waits for the bounded in-flight save before releasing runtime state. Allow at least 110 seconds for CPA/container graceful shutdown. Run only one instance against a state directory; do not run CLI and plugin together. Browser-originated authentication behavior is unchanged. See [prototype limitations](prototype.md).
+## Replacement and recovery
+
+On the verified CPA host, `plugin.quiesce` stops public admission and session cleanup, closes the HTTP listener, and drains the admitted save before replacement registration. HTTP drain is capped at 15 seconds and total quiesce at 105 seconds; the save has its own 90-second context. A drain timeout returns `quiesce_failed`, aborting replacement. The host cleans up a failed candidate, then calls the old image's `plugin.reconfigure` with its previous configuration. This rebinds a fresh HTTP server and resumes the same sessions and any outstanding save. Resume bind failures are reported, not hidden. No separate `plugin.resume` method exists on this host.
+
+Successful replacement need not preserve sessions. A surviving cookie gets a structured `session_lost` response and a service-updated/session-unavailable warning, not an automatic reset. Visitors must check with the operator if a save was underway or needed review. Otherwise, **Start new sign-in** explicitly rotates the cookie and CSRF; consent and code creation are separate actions. Pending credentials are never replayed. Existing open tabs recover from changed CSRF by fetching the shared session, without resending old approval proof.
+
+**The first upgrade from a build without quiesce still requires a controlled CPA restart.** This minimal support applies to subsequent distinct native builds on a host with the verified quiesce/rollback contract; it is not zero-downtime or session migration. During the listener gap a reverse proxy may return a temporary upstream error. Go C-shared images remain mapped by the host even after retirement; repeated replacements still consume host memory. Allow at least 110 seconds for CPA/container graceful shutdown. Shutdown uses the same bounded drain; unusual blocked I/O retains the stopped runtime rather than discarding an unfinished save. Run only one instance against a state directory; do not run CLI and plugin together. See [prototype limitations](prototype.md).
 
 CLI remains available without the `native` tag. Native checks:
 
@@ -30,6 +36,7 @@ CLI remains available without the `native` tag. Native checks:
 go test -tags native ./...
 go test -race -tags native ./...
 go vet -tags native ./...
-# Also run the real CPA host metadata/resource validators using a test overlay:
-CPA_HOST_SOURCE=/path/to/cpa-v8.0.63 go test -tags native -run TestActualCPAHostContract .
+# Actual host metadata/resource validation and two-image replacement/rollback:
+# Overlay tests do not edit host source or contact a deployed CPA.
+CPA_HOST_SOURCE=/path/to/cpa-v8.0.63 go test -tags native -run 'TestActualCPAHost(Contract|Replacement)$' .
 ```

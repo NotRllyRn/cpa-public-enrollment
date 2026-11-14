@@ -21,16 +21,44 @@ func nonce() string {
 
 const sessionGrace = 5 * time.Minute
 
-// Expires is the authorization deadline; retention never extends authorization.
-func (s *flow) retainedUntil() time.Time { return s.Expires.Add(sessionGrace) }
-
+// Retention never extends authorization. In-flight saves keep their identity
+// until they publish a result; terminal results then remain visible for 5 minutes.
+func (s *flow) retainedUntil() time.Time {
+	if !s.Finished.IsZero() {
+		return s.Finished.Add(sessionGrace)
+	}
+	return s.Expires.Add(sessionGrace)
+}
+func (s *flow) expire(now time.Time) {
+	if !now.Before(s.Expires) && (s.Status == "idle" || s.Status == "creating" || s.Status == "waiting") {
+		s.Status = "expired"
+		s.ID, s.Code, s.Lease = "", "", ""
+	}
+}
 func (a *app) pruneSessions(now time.Time) {
 	for id, s := range a.sessions {
-		if !now.Before(s.retainedUntil()) {
+		s.expire(now)
+		if s.Status != "saving" && s.Status != "verifying" && !now.Before(s.retainedUntil()) {
 			delete(a.sessions, id)
 		}
 	}
 }
+func (a *app) newSession(w http.ResponseWriter, now time.Time) *flow {
+	id := nonce()
+	s := &flow{CSRF: nonce(), Status: "idle", Expires: now.Add(15 * time.Minute)}
+	a.sessions[id] = s
+	// Server-owned retention lets a surviving cookie explain lost state after
+	// expiry or replacement instead of silently starting another enrollment.
+	http.SetCookie(w, &http.Cookie{Name: "__Host-enroll", Value: id, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	return s
+}
+func sessionError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": message}})
+}
+
+const lostSessionMessage = "Service updated or sign-in session is no longer available. If a save was in progress or needed operator review, contact the operator before starting again."
 
 type flow struct {
 	CSRF     string    `json:"csrf"`
@@ -41,6 +69,7 @@ type flow struct {
 	Until    time.Time `json:"until"`
 	Expires  time.Time `json:"expires"`
 	Interval int       `json:"interval"`
+	Finished time.Time `json:"-"`
 }
 type app struct {
 	closing    bool
@@ -51,6 +80,7 @@ type app struct {
 	management *Management
 	adopt      sync.Mutex
 	wg         sync.WaitGroup
+	saveDone   <-chan struct{}
 }
 
 func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -59,6 +89,13 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; connect-src 'self' https://auth.openai.com; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+	a.mu.Lock()
+	closing := a.closing
+	a.mu.Unlock()
+	if closing {
+		sessionError(w, 503, "service_updating", "Service is updating. Check sign-in status shortly; do not start another sign-in while saving.")
+		return
+	}
 	if r.Method == "GET" && (r.URL.Path == "/" || r.URL.Path == "/app.js") {
 		if r.URL.Path == "/" {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -70,12 +107,12 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != "POST" || r.Header.Get("Origin") != a.origin {
-		http.Error(w, "forbidden", 403)
+		sessionError(w, 403, "forbidden", "Request origin is not allowed.")
 		return
 	}
 	media, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if media != "application/json" {
-		http.Error(w, "JSON required", 415)
+		sessionError(w, 415, "invalid_request", "JSON required.")
 		return
 	}
 	var in struct {
@@ -87,52 +124,79 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
 	if d.Decode(&in) != nil || d.Decode(new(any)) != io.EOF {
-		http.Error(w, "invalid request", 400)
+		sessionError(w, 400, "invalid_request", "Invalid request.")
 		return
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.closing {
-		http.Error(w, "shutting down", 503)
+		sessionError(w, 503, "service_updating", "Service is updating. Check sign-in status shortly; do not start another sign-in while saving.")
 		return
 	}
 	now := time.Now()
 	a.pruneSessions(now)
+	cookie, _ := r.Cookie("__Host-enroll")
 	var s *flow
-	if c, e := r.Cookie("__Host-enroll"); e == nil {
-		s = a.sessions[c.Value]
+	if cookie != nil {
+		s = a.sessions[cookie.Value]
 	}
-	if r.URL.Path == "/session" {
-		if s == nil {
-			if len(a.sessions) >= 2048 {
-				http.Error(w, "busy", 503)
+	if r.URL.Path == "/restart" {
+		// Missing state cannot validate the old CSRF. Exact Origin + JSON still
+		// protect this explicit recovery action; it never imports credentials.
+		if s != nil {
+			if in.CSRF != s.CSRF {
+				sessionError(w, 409, "session_changed", "Another tab changed the sign-in session. Checking its current status.")
 				return
 			}
-			id := nonce()
-			s = &flow{CSRF: nonce(), Status: "idle", Expires: now.Add(15 * time.Minute)}
-			a.sessions[id] = s
-			http.SetCookie(w, &http.Cookie{Name: "__Host-enroll", Value: id, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: int((15*time.Minute + sessionGrace) / time.Second)})
+			if s.Status != "expired" {
+				sessionError(w, 409, "session_active", "This sign-in cannot be reset. Check its status; contact the operator if review is needed.")
+				return
+			}
+		}
+		if s == nil && len(a.sessions) >= 2048 {
+			sessionError(w, 503, "busy", "Service is busy. Try again shortly.")
+			return
+		}
+		if cookie != nil {
+			delete(a.sessions, cookie.Value)
+		}
+		s = a.newSession(w, now)
+	} else if r.URL.Path == "/session" {
+		if s == nil {
+			if cookie != nil {
+				sessionError(w, 409, "session_lost", lostSessionMessage)
+				return
+			}
+			if len(a.sessions) >= 2048 {
+				sessionError(w, 503, "busy", "Service is busy. Try again shortly.")
+				return
+			}
+			s = a.newSession(w, now)
 		}
 	} else {
-		if s == nil || in.CSRF != s.CSRF {
-			http.Error(w, "forbidden", 403)
+		if s == nil {
+			sessionError(w, 409, "session_lost", lostSessionMessage)
+			return
+		}
+		if in.CSRF != s.CSRF {
+			sessionError(w, 409, "session_changed", "Another tab changed the sign-in session. Checking its current status.")
 			return
 		}
 		if !now.Before(s.Expires) && (r.URL.Path == "/start" || r.URL.Path == "/created" || r.URL.Path == "/poll" || r.URL.Path == "/approved") {
-			http.Error(w, "authorization expired", http.StatusConflict)
+			sessionError(w, 409, "session_expired", "The sign-in authorization window has ended. Check its status before starting again.")
 			return
 		}
 		switch r.URL.Path {
 		case "/start":
 			if !in.Consent {
-				http.Error(w, "consent required", 400)
+				sessionError(w, 400, "consent_required", "Consent required.")
 				return
 			}
 			if s.Status == "idle" || (s.Status == "creating" && now.After(s.Until)) {
 				s.Status = "creating"
 				s.Lease = nonce()
 				s.Until = now.Add(45 * time.Second)
-			} else { // Only the reservation holder receives the creation permission.
+			} else {
 				respond(w, map[string]any{"status": s.Status})
 				return
 			}
@@ -144,7 +208,7 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if s.Status != "creating" || in.Lease != s.Lease || now.After(s.Until) || in.ID == "" || in.Code == "" || len(in.ID) > 1024 || len(in.Code) > 128 {
-				http.Error(w, "stale reservation", 409)
+				sessionError(w, 409, "stale_reservation", "Another tab or an expired reservation changed this sign-in. Check its status.")
 				return
 			}
 			s.ID = in.ID
@@ -156,8 +220,8 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				s.Interval = 5
 			}
 			if s.Interval > 900 {
-				s.Interval = 86400 // Session expires before another poll; never shorten a long provider interval.
-			}
+				s.Interval = 86400
+			} // Never shorten a long provider interval.
 			s.Until = now.Add(time.Duration(s.Interval) * time.Second)
 		case "/poll":
 			if s.Status != "waiting" || now.Before(s.Until) {
@@ -174,11 +238,11 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if s.Status != "waiting" || s.Lease == "" || in.Lease != s.Lease || now.After(s.Until) || in.AuthorizationCode == "" || in.Verifier == "" {
-				http.Error(w, "stale approval", 409)
+				sessionError(w, 409, "stale_approval", "This approval is no longer current. Check sign-in status before taking further action.")
 				return
 			}
 			if !a.adopt.TryLock() {
-				http.Error(w, "save busy; retry approval", 503)
+				sessionError(w, 503, "save_busy", "Another save is in progress. Retrying approval delivery shortly.")
 				return
 			}
 			s.Status = "saving"
@@ -186,10 +250,12 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.Code = ""
 			s.Lease = ""
 			a.wg.Add(1)
-			go func() { defer a.wg.Done(); a.save(s, in.AuthorizationCode, in.Verifier) }()
+			done := make(chan struct{})
+			a.saveDone = done
+			go func() { defer a.wg.Done(); defer close(done); a.save(s, in.AuthorizationCode, in.Verifier) }()
 		case "/status":
 		default:
-			http.NotFound(w, r)
+			sessionError(w, 404, "not_found", "Unknown sign-in endpoint.")
 			return
 		}
 	}

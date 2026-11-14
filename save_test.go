@@ -45,8 +45,8 @@ func TestApprovalAtMostOneExchangeAndShutdownFence(t *testing.T) {
 func TestDeadlineRetainsSaveResult(t *testing.T) {
 	a := testApp(t)
 	cookie, initial := bootstrap(t, a)
-	if cookie.MaxAge != 1200 {
-		t.Fatal("cookie must cover fixed grace")
+	if cookie.MaxAge != 0 {
+		t.Fatal("server must own retention; surviving cookie explains lost state")
 	}
 	s := a.sessions[cookie.Value]
 	s.Status, s.Lease = "waiting", "proof"
@@ -72,7 +72,7 @@ func TestDeadlineRetainsSaveResult(t *testing.T) {
 	}
 	<-entered
 	a.mu.Lock()
-	s.Expires = time.Now().Add(-time.Second)
+	s.Expires = time.Now().Add(-sessionGrace - time.Second)
 	a.pruneSessions(time.Now())
 	a.mu.Unlock()
 	for _, path := range []string{"/status", "/session"} {

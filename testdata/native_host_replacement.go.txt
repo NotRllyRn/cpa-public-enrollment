@@ -1,0 +1,85 @@
+package pluginhost
+
+import (
+ "bytes"
+ "context"
+ "encoding/json"
+ "fmt"
+ "io"
+ "net"
+ "net/http"
+ "os"
+ "path/filepath"
+ "strings"
+ "testing"
+ "time"
+
+ "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+ "gopkg.in/yaml.v3"
+)
+
+func TestPublicEnrollmentActualReplacement(t *testing.T) {
+ for _,failure:=range []bool{false,true} {
+  t.Run(fmt.Sprint("registration_failure=",failure),func(t *testing.T){
+   root,paths:=makeVersionedPluginDir(t,"alpha","1.0.0")
+   install:=func(version,source string) {
+    if paths[version]=="" { paths[version]=writeVersionedPluginFile(t,root,"alpha",version) }
+    raw,err:=os.ReadFile(source); if err!=nil { t.Fatal(err) }
+    if err=os.WriteFile(paths[version],raw,0600); err!=nil { t.Fatal(err) }
+   }
+   install("1.0.0",PLUGIN_ONE)
+   l,err:=net.Listen("tcp","127.0.0.1:0"); if err!=nil { t.Fatal(err) }
+   addr:=l.Addr().String(); l.Close()
+   key:=filepath.Join(t.TempDir(),"key"); if err=os.WriteFile(key,[]byte("test-management-key"),0600); err!=nil { t.Fatal(err) }
+   state:=filepath.Join(t.TempDir(),"state")
+   cfg:=func(version,origin string)*config.Config {
+    raw:=fmt.Sprintf("store:\n  version: %s\nlisten: %q\npublic_origin: %s\nmanagement_key_file: %q\nstate_dir: %q\n",version,addr,origin,key,state)
+    var node yaml.Node
+    if err:=yaml.Unmarshal([]byte(raw),&node); err!=nil { t.Fatal(err) }
+    enabled:=true
+    return &config.Config{Plugins:config.PluginsConfig{Enabled:true,Dir:root,Configs:map[string]config.PluginInstanceConfig{"alpha":{Enabled:&enabled,Raw:*node.Content[0]}}}}
+   }
+   h:=New(); defer h.ShutdownAll()
+   h.ApplyConfig(context.Background(),cfg("1.0.0","https://enroll.example"))
+   if !h.pluginIdentityCurrent("alpha",paths["1.0.0"],"1.0.0") { t.Fatal("first image failed registration") }
+   // Real HTTP on the plugin's public listener; cookie is supplied explicitly
+   // because tests are loopback HTTP while production requires HTTPS.
+   client:=&http.Client{Timeout:5*time.Second}
+   call:=func(path string,data any,cookie *http.Cookie)(*http.Response,[]byte){
+    raw,_:=json.Marshal(data)
+    req,_:=http.NewRequest("POST","http://"+addr+path,bytes.NewReader(raw))
+    req.Header.Set("Origin","https://enroll.example"); req.Header.Set("Content-Type","application/json")
+    if cookie!=nil { req.AddCookie(cookie) }
+    res,err:=client.Do(req); if err!=nil { t.Fatal(err) }
+    body,err:=io.ReadAll(res.Body); res.Body.Close(); if err!=nil { t.Fatal(err) }; return res,body
+   }
+   res,body:=call("/session",map[string]any{},nil)
+   var first struct{ CSRF,Status string }
+   if res.StatusCode!=200 || json.Unmarshal(body,&first)!=nil || first.Status!="idle" || len(res.Cookies())!=1 { t.Fatalf("bootstrap: %d %s",res.StatusCode,body) }
+   cookie:=res.Cookies()[0]
+   res,body=call("/start",map[string]any{"CSRF":first.CSRF,"Consent":true},cookie)
+   if res.StatusCode!=200 || !strings.Contains(string(body),`"status":"creating"`) { t.Fatal(string(body)) }
+   origin:="https://enroll.example"
+   if failure { origin="http://invalid.example" } // actual plugin.register config failure
+   // Host startup cleans unselected files, so publish v2 only after v1 is live.
+   install("2.0.0",PLUGIN_TWO)
+   h.ApplyConfig(context.Background(),cfg("2.0.0",origin))
+   expectedVersion:="2.0.0"; if failure { expectedVersion="1.0.0" }
+   if !h.pluginIdentityCurrent("alpha",paths[expectedVersion],expectedVersion) { t.Fatalf("wrong active image after replacement (failure=%v)",failure) }
+   res,body=call("/session",map[string]any{},cookie)
+   if failure {
+    var restored struct{ CSRF,Status string }
+    if res.StatusCode!=200 || json.Unmarshal(body,&restored)!=nil || restored.CSRF!=first.CSRF || restored.Status!="creating" { t.Fatalf("rollback did not resume listener/session: %d %s",res.StatusCode,body) }
+    // Retry with valid config after failed replacement: listener must again be
+    // released and a real second native image registered on the SAME port.
+    h.ApplyConfig(context.Background(),cfg("2.0.0","https://enroll.example"))
+    if !h.pluginIdentityCurrent("alpha",paths["2.0.0"],"2.0.0") { t.Fatal("replacement after rollback failed") }
+    res,body=call("/session",map[string]any{},cookie)
+   }
+   if res.StatusCode!=409 || !strings.Contains(string(body),`"code":"session_lost"`) || !strings.Contains(string(body),"Service updated") || len(res.Cookies())!=0 { t.Fatalf("lost image session silently reset: %d %s",res.StatusCode,body) }
+   res,body=call("/restart",map[string]any{},cookie)
+   var next struct{ CSRF,Status string }
+   if res.StatusCode!=200 || json.Unmarshal(body,&next)!=nil || next.Status!="idle" || next.CSRF==first.CSRF || len(res.Cookies())!=1 || res.Cookies()[0].Value==cookie.Value { t.Fatalf("explicit recovery failed: %d %s",res.StatusCode,body) }
+  })
+ }
+}

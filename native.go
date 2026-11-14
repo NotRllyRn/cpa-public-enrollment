@@ -91,6 +91,11 @@ func configure(raw []byte) error {
 		if old.Listen != c.Listen || old.PublicOrigin != c.PublicOrigin || old.CPAURL != c.CPAURL || old.ManagementKeyFile != c.ManagementKeyFile || old.StateDir != c.StateDir {
 			return errors.New("runtime configuration changes require CPA restart")
 		}
+		// The host rolls back a quiesced image with plugin.reconfigure and
+		// the previous config. Rebind without replacing sessions or saves.
+		if r.server == nil {
+			return r.listen()
+		}
 		return nil
 	}
 	key, err := os.ReadFile(c.ManagementKeyFile)
@@ -101,16 +106,30 @@ func configure(raw []byte) error {
 	if device.prepare() != nil {
 		return errors.New("state_dir must be private and writable (0700)")
 	}
-	listener, err := net.Listen("tcp", c.Listen)
+	a := &app{sessions: make(map[string]*flow), origin: c.PublicOrigin, device: device, management: NewManagement(c.CPAURL, string(key))}
+	r := &runningPlugin{config: c, app: a}
+	if err := r.listen(); err != nil {
+		return err
+	}
+	nativeRuntime.current = r
+	return nil
+}
+
+// Called with nativeRuntime locked. A shut-down http.Server cannot be reused.
+func (r *runningPlugin) listen() error {
+	listener, err := net.Listen("tcp", r.config.Listen)
 	if err != nil {
 		return errors.New("cannot bind enrollment listener: " + err.Error())
 	}
-	a := &app{sessions: make(map[string]*flow), origin: c.PublicOrigin, device: device, management: NewManagement(c.CPAURL, string(key))}
-	srv := &http.Server{Handler: a, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
+	srv := &http.Server{Handler: r.app, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
+	done := make(chan struct{})
+	r.server, r.done = srv, done
+	r.app.mu.Lock()
+	r.app.closing = false
+	r.app.mu.Unlock()
+	go func() { defer close(done); _ = srv.Serve(listener) }()
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &runningPlugin{config: c, app: a, server: srv, cancel: cancel, done: make(chan struct{})}
-	nativeRuntime.current = r
-	go func() { defer close(r.done); _ = srv.Serve(listener) }()
+	r.cancel = cancel
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
@@ -119,12 +138,53 @@ func configure(raw []byte) error {
 			case <-ctx.Done():
 				return
 			case now := <-ticker.C:
-				a.mu.Lock()
-				a.pruneSessions(now)
-				a.mu.Unlock()
+				r.app.mu.Lock()
+				r.app.pruneSessions(now)
+				r.app.mu.Unlock()
 			}
 		}
 	}()
+	return nil
+}
+
+const quiesceTimeout = 105 * time.Second
+
+// Stop public admission and release the listener BEFORE replacement registration.
+// Preserve the app for the host's rollback reconfigure callback. A timeout fails
+// replacement rather than claiming it is safe to overlap a still-running save.
+func (r *runningPlugin) quiesce(timeout time.Duration) error {
+	r.app.mu.Lock()
+	r.app.closing = true
+	drained := r.app.saveDone
+	r.app.mu.Unlock()
+	r.cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if r.server != nil {
+		httpCtx, stop := context.WithTimeout(ctx, 15*time.Second)
+		if r.server.Shutdown(httpCtx) != nil {
+			_ = r.server.Close()
+		}
+		stop()
+		<-r.done
+		r.server = nil
+	}
+	if drained == nil {
+		return nil
+	}
+	select {
+	case <-drained:
+		return nil
+	case <-ctx.Done():
+		return errors.New("save drain timed out; replacement must be aborted")
+	}
+}
+func quiesce() error {
+	nativeRuntime.Lock()
+	defer nativeRuntime.Unlock()
+	if r := nativeRuntime.current; r != nil {
+		return r.quiesce(quiesceTimeout)
+	}
 	return nil
 }
 func shutdown() {
@@ -134,17 +194,12 @@ func shutdown() {
 	if r == nil {
 		return
 	}
-	r.app.mu.Lock()
-	r.app.closing = true
-	r.app.mu.Unlock()
-	r.cancel()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if r.server.Shutdown(ctx) != nil {
-		_ = r.server.Close()
+	if r.quiesce(quiesceTimeout) != nil {
+		// The actual host keeps Go c-shared images mapped. Keep runtime state
+		// too if unusual blocked I/O outlives the bounded drain.
+		return
 	}
-	r.app.wg.Wait()
-	<-r.done
+	r.cancel()
 	nativeRuntime.current = nil
 }
 func errorEnvelope(code, message string) []byte {
@@ -152,6 +207,12 @@ func errorEnvelope(code, message string) []byte {
 	return raw
 }
 func handleMethod(method string, request []byte) ([]byte, error) {
+	if method == "plugin.quiesce" {
+		if err := quiesce(); err != nil {
+			return errorEnvelope("quiesce_failed", err.Error()), nil
+		}
+		return []byte(`{"ok":true,"result":{}}`), nil
+	}
 	if method == "management.register" {
 		return json.Marshal(map[string]any{"ok": true, "result": map[string]any{"resources": []map[string]string{{"Path": "/open", "Menu": "Public Enrollment", "Description": "Open the public enrollment page."}}}})
 	}
