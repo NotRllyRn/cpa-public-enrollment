@@ -1,8 +1,12 @@
-# CPA public enrollment prototype
+# CPA public enrollment
 
-A small Go companion for consenting visitors to grant CPA ongoing ChatGPT access. Plain UI, no dependencies. Runnable locally; not deployed or production-ready.
+A native CPA plugin for consenting visitors to grant CPA ongoing ChatGPT access. Targets CPA v8.0.63 (ABI 1, schema 10), with an optional standalone CLI. Not yet production-validated.
 
-## Run
+## Native plugin
+
+Build with `CGO_ENABLED=1 go build -tags native -buildmode=c-shared -o public-enrollment.so .` using the target libc/toolchain. See [plugin configuration and lifecycle](docs/native.md). No remote installation is performed by this repository.
+
+## Standalone CLI
 
 Requires Go 1.23+, private CPA v8 management (reference: v8.0.63), and an HTTPS reverse proxy. Restrict direct listener access. Run **one instance**:
 
