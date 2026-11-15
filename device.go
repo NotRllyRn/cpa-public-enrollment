@@ -216,12 +216,18 @@ func (d *Device) persist(name string, t *nativeToken) (result error) {
 }
 func (d *Device) checkPending(name, account, email string) error {
 	entries, err := os.ReadDir(d.Dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
 	if err != nil {
 		return diagnostic("could not list pending credentials: " + safeReason(err))
 	}
 	for _, entry := range entries {
 		if entry.Name() == name || strings.HasPrefix(entry.Name(), ".probe-") {
 			continue
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return diagnostic("pending credential is a symbolic link; duplicate checking is unsafe")
 		}
 		if entry.IsDir() {
 			return diagnostic("unexpected directory in pending credentials; duplicate checking is unsafe")
@@ -240,7 +246,7 @@ func (d *Device) checkPending(name, account, email string) error {
 			return diagnostic("an existing pending credential has unreadable or incomplete member identity; duplicate checking is unsafe")
 		}
 		if sameMember(t.Account, t.Email, account, email) {
-			return diagnostic("an earlier pending enrollment exists for this member; its outcome must be reviewed before another upload")
+			return diagnostic("an earlier pending enrollment exists for this member; reset its original session or wait up to 10 minutes before retrying; local cleanup does not undo a CPA import")
 		}
 	}
 	return nil

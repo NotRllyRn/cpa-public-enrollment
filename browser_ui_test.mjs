@@ -145,7 +145,7 @@ test('flow states, responsive light/dark, plain-text operator and closure action
    assert.equal(await page.locator('#operator-name img').count(),0);
    for(const status of states) {
     await page.evaluate(s=>show(s),{...waiting,status});
-    assert.equal(await page.locator('#start').isVisible(),['idle','expired'].includes(status));
+    assert.equal(await page.locator('#start').isVisible(),['idle','expired','error','operator-review','duplicate'].includes(status));
     assert.equal(await page.locator('#instructions').isVisible(),status==='waiting');
     assert.equal(await page.locator('#resume').isVisible(),false);
     assert.equal(await page.locator('#disclosure').isVisible(),status==='idle');
@@ -162,7 +162,7 @@ test('explicit consent only after reset, interrupted vs terminal error, unsuppor
  const {page,context,calls,setState}=await pageFor({status:'expired',csrf:'one'});
  try {
   setState({status:'idle',csrf:'two'});
-  await page.getByRole('button',{name:'Reset expired sign-in'}).click();
+  await page.getByRole('button',{name:'Reset session to review access'}).click();
   await page.getByRole('button',{name:'Authorize and start'}).waitFor();
   assert.equal(calls.filter(c=>c.url==='/restart').length,1);
   assert.equal(calls.some(c=>c.url==='/start'),false);
@@ -177,10 +177,10 @@ test('explicit consent only after reset, interrupted vs terminal error, unsuppor
   assert.equal(await page.locator('#state-title').textContent(),'Connection interrupted');
   await page.evaluate(()=>show({status:'error',csrf:'two'}));
   assert.equal(await page.locator('#resume').isVisible(),false);
-  assert.equal(await page.locator('#start').isVisible(),false);
+  assert.equal(await page.locator('#start').isVisible(),true);
   await page.evaluate(()=>failure(Object.assign(new Error('Service updated or session unavailable.'),{code:'session_lost'})));
   await page.getByRole('button',{name:'Reset session to review access'}).waitFor();
-  await page.getByText(/If you already approved at OpenAI/).waitFor();
+  await page.getByText(/Reset does not create a code/).waitFor();
   setState({status:'idle',csrf:'three'});
   await page.getByRole('button',{name:'Reset session to review access'}).click();
   await page.getByRole('button',{name:'Authorize and start'}).waitFor();

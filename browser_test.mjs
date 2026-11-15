@@ -35,13 +35,14 @@ test('device transport creates and polls directly to OpenAI with no cookies',asy
  assert.equal(calls[0].data.client_id,'app_EMoamEEZ73f0CkXaXp7hrann');
  assert.equal(calls[1].data.device_auth_id,'id');
 });
-test('terminal diagnostics are literal text and retain the no-retry warning',()=>{
+test('terminal diagnostics are literal text and offer explicit reset',()=>{
  const b=browser();
  for(const status of ['error','operator-review']) {
   b.run(`show({status:${JSON.stringify(status)},message:'Checking CPA inventory failed: HTTP 403 (Forbidden). <img src=x onerror=alert(1)>'})`);
   assert.match(b.elements.get('status').textContent,/Checking CPA inventory failed: HTTP 403/);
   assert.match(b.elements.get('status').textContent,/<img src=x/);
-  assert.equal(b.elements.get('start').hidden,true);
+  assert.equal(b.elements.get('start').hidden,false);
+  assert.match(b.elements.get('status').textContent,/Reset/);
   assert.equal(b.elements.get('instructions').hidden,true);
  }
 });
@@ -62,7 +63,7 @@ test('expiry hides code and stops polling until explicit restart rotates CSRF',a
  await settle();
  assert.equal(b.elements.get('instructions').hidden,true);
  assert.equal(b.elements.get('code').textContent,'');
- assert.equal(b.elements.get('start').textContent,'Reset expired sign-in');
+ assert.equal(b.elements.get('start').textContent,'Reset session to review access');
  await b.run('tick()'); assert.equal(b.calls.length,1);
  await b.elements.get('start').onclick();
  assert.deepEqual(b.calls.map(c=>c.url),['/session','/restart']);
@@ -108,11 +109,11 @@ test('expiry conflict checks existing save without presenting a restart',async()
  assert.equal(b.elements.get('start').disabled,true);
  assert.equal(b.elements.get('code').textContent,'');
 });
-test('terminal and operator-review states never offer restart or keep device code',async()=>{
+test('terminal states hide device code and offer reset only when allowed',async()=>{
  for(const status of ['complete','duplicate','operator-review','error']) {
   const b=browser({supported:true,reply:()=>({status,csrf:'one',user_code:'STALE'})});
   await settle(); await b.run('tick()');
-  assert.equal(b.calls.length,1); assert.equal(b.elements.get('start').disabled,true);
+  assert.equal(b.calls.length,1); assert.equal(b.elements.get('start').disabled,status==='complete');
   assert.equal(b.elements.get('instructions').hidden,true); assert.equal(b.elements.get('code').textContent,'');
  }
 });
@@ -133,7 +134,7 @@ test('all flow states have clear headings, actions and code visibility', async()
   assert.ok(b.elements.get('state-title').textContent);
   assert.ok(b.elements.get('status').textContent);
   assert.equal(b.elements.get('instructions').hidden,status!=='waiting');
-  assert.equal(b.elements.get('start').disabled,!['idle','expired'].includes(status));
+  assert.equal(b.elements.get('start').disabled,!['idle','expired','error','operator-review','duplicate'].includes(status));
  }
 });
 test('explicit authorization, progressive disclosure and exact stopping-access text',()=>{
@@ -228,11 +229,11 @@ test('transport interruption is not a terminal save error; checking restores sta
  await b.run('failure(Object.assign(new Error("aborted"),{code:23}))');
  assert.equal(b.elements.get('task').dataset.state,'network');
 });
-test('state-specific actions and disclosure visibility do not offer terminal retries',async()=>{
+test('state-specific actions require review after terminal reset',async()=>{
  for(const status of ['idle','creating','waiting','saving','verifying','complete','duplicate','operator-review','error','expired']) {
   const b=browser({supported:true,reply:()=>({...waiting,status})}); await settle();
   assert.equal(b.elements.get('disclosure').hidden,status!=='idle');
-  assert.equal(b.elements.get('start').hidden,!['idle','expired'].includes(status));
+  assert.equal(b.elements.get('start').hidden,!['idle','expired','error','operator-review','duplicate'].includes(status));
   assert.equal(b.elements.get('resume').hidden,true);
   assert.equal(b.calls.some(c=>c.url==='/start'),false);
  }

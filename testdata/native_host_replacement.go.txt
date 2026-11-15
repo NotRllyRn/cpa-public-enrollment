@@ -76,7 +76,7 @@ func TestPublicEnrollmentActualReplacement(t *testing.T) {
     if !h.pluginIdentityCurrent("alpha",paths["2.0.0"],"2.0.0") { t.Fatal("replacement after rollback failed") }
     res,body=call("/session",map[string]any{},cookie)
    }
-   if res.StatusCode!=409 || !strings.Contains(string(body),`"code":"session_lost"`) || !strings.Contains(string(body),"Service updated") || len(res.Cookies())!=0 { t.Fatalf("lost image session silently reset: %d %s",res.StatusCode,body) }
+   if res.StatusCode!=409 || !strings.Contains(string(body),`"code":"session_lost"`) || !strings.Contains(string(body),"Reset to clear its local pending credentials") || len(res.Cookies())!=0 { t.Fatalf("lost image session silently reset: %d %s",res.StatusCode,body) }
    res,body=call("/restart",map[string]any{},cookie)
    var next struct{ CSRF,Status string }
    if res.StatusCode!=200 || json.Unmarshal(body,&next)!=nil || next.Status!="idle" || next.CSRF==first.CSRF || len(res.Cookies())!=1 || res.Cookies()[0].Value==cookie.Value { t.Fatalf("explicit recovery failed: %d %s",res.StatusCode,body) }

@@ -58,7 +58,7 @@ func TestExpiredRecoveryRotatesIdentityAndFencesTabs(t *testing.T) {
 	}
 }
 func TestRecoveryCannotResetSaveOrResult(t *testing.T) {
-	for _, status := range []string{"idle", "creating", "waiting", "saving", "verifying", "complete", "operator-review", "duplicate", "error"} {
+	for _, status := range []string{"idle", "creating", "waiting", "saving", "verifying", "complete"} {
 		t.Run(status, func(t *testing.T) {
 			a := testApp(t)
 			cookie, s := bootstrap(t, a)
@@ -81,7 +81,7 @@ func TestMissingSessionRequiresExplicitRecovery(t *testing.T) {
 	for _, path := range []string{"/session", "/status", "/start", "/approved"} {
 		w := request(a, path, map[string]any{"CSRF": s.CSRF}, cookie, a.origin)
 		requireSessionError(t, w, "session_lost")
-		if len(w.Result().Cookies()) != 0 || len(a.sessions) != 0 || !strings.Contains(w.Body.String(), "Service updated") {
+		if len(w.Result().Cookies()) != 0 || len(a.sessions) != 0 || !strings.Contains(w.Body.String(), "session is unavailable") {
 			t.Fatal("silently reset missing session")
 		}
 	}

@@ -64,7 +64,19 @@ func (a *app) save(s *flow, code, verifier string) {
 		a.fail(s, "error", "Token exchange failed", diagnostic("response is missing valid token or member identity fields"))
 		return
 	}
+	if err := a.device.cleanupPending(time.Now(), ""); err != nil {
+		a.fail(s, "operator-review", "Cleaning expired pending credentials failed", err)
+		return
+	}
+	// Check before persisting: a blocked retry must not leave another token.
+	if err := a.device.checkPending("", t.Account, t.Email); err != nil {
+		a.fail(s, "operator-review", "Checking pending enrollments failed", err)
+		return
+	}
 	name := "codex-device-" + nonce() + ".json"
+	if s.Owner != "" {
+		name = "codex-device-" + s.Owner + "-" + nonce() + ".json"
+	}
 	if err := a.device.persist(name, &t); err != nil {
 		// Preserve evidence: the code was consumed, and a partial secret file may exist.
 		a.fail(s, "operator-review", "Saving local recovery credentials failed", err)

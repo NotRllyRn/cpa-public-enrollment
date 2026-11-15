@@ -48,8 +48,8 @@ const messages = {
  verifying:'Checking that CPA adopted your account. Do not start another sign-in.',
  complete:'Your credentials were accepted by CPA. The operator can now use your Codex access. You may close this tab.',
  duplicate:'This account is already connected. No new enrollment was added. If this is unexpected, contact the operator before trying again.',
- 'operator-review':'We could not confirm the final result. Do not enroll again. Contact the person who shared this link.',
- error:'Sign-in could not be saved. Contact the operator before trying again.'
+ 'operator-review':'The result is uncertain. You can reset local pending credentials and review access again. Reset does not revoke access or undo a CPA import.',
+ error:'Sign-in could not be saved. Reset to clear local pending credentials and review access again.'
 };
 const titles = {
  idle:'Review ongoing access', creating:'Creating your sign-in code', waiting:'Finish on OpenAI',
@@ -113,7 +113,7 @@ $('copy').onclick = async () => {
 function show(s) {
  const focused = document.activeElement;
  if (s.csrf) csrf = s.csrf;
- recovery = s.status === 'expired';
+ recovery = ['expired','error','operator-review','duplicate'].includes(s.status);
  paused = recovery || ['complete','duplicate','operator-review','error'].includes(s.status);
  text('state-title', titles[s.status] || 'Sign-in status');
  const detail = ['error','operator-review'].includes(s.status) && typeof s.message === 'string' ? s.message + ' ' : '';
@@ -124,7 +124,7 @@ function show(s) {
   $('instructions').hidden = false; text('code', s.user_code);
   resetCopy(JSON.stringify([csrf, s.user_code]));
  } else { hideCode(); }
- text('start', recovery ? 'Reset expired sign-in' : 'Authorize and start');
+ text('start', recovery ? 'Reset session to review access' : 'Authorize and start');
  $('start').disabled = !(recovery || s.status === 'idle');
  $('start').hidden = $('start').disabled;
  $('start').setAttribute('aria-disabled', String($('start').disabled));
@@ -157,7 +157,7 @@ async function failure(e) {
  if (e.code === 'session_lost') {
   csrf = undefined; recovery = true;
   text('state-title', 'Your session is unavailable');
-  text('status', e.message + ' If you already approved at OpenAI, ask the operator to check the result before starting again. Resetting only returns to access review; it does not create a code.');
+  text('status', e.message + ' Reset does not create a code.');
   text('start', 'Reset session to review access');
   $('start').setAttribute('aria-describedby', 'status');
   $('start').disabled = false; $('start').hidden = false;

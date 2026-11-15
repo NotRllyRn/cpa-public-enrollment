@@ -45,7 +45,7 @@ func (a *app) pruneSessions(now time.Time) {
 }
 func (a *app) newSession(w http.ResponseWriter, now time.Time) *flow {
 	id := nonce()
-	s := &flow{CSRF: nonce(), Status: "idle", Expires: now.Add(15 * time.Minute)}
+	s := &flow{Owner: pendingOwner(id), CSRF: nonce(), Status: "idle", Expires: now.Add(15 * time.Minute)}
 	a.sessions[id] = s
 	// Server-owned retention lets a surviving cookie explain lost state after
 	// expiry or replacement instead of silently starting another enrollment.
@@ -58,9 +58,10 @@ func sessionError(w http.ResponseWriter, status int, code, message string) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": message}})
 }
 
-const lostSessionMessage = "Service updated or sign-in session is no longer available. If a save was in progress or needed operator review, contact the operator before starting again."
+const lostSessionMessage = "Your sign-in session is unavailable. Reset to clear its local pending credentials and review access. This does not revoke access or undo a CPA import."
 
 type flow struct {
+	Owner    string    `json:"-"`
 	CSRF     string    `json:"csrf"`
 	Status   string    `json:"status"`
 	Message  string    `json:"message,omitempty"`
@@ -153,13 +154,31 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				sessionError(w, 409, "session_changed", "Another tab changed the sign-in session. Checking its current status.")
 				return
 			}
-			if s.Status != "expired" {
+			if s.Status != "expired" && s.Status != "error" && s.Status != "operator-review" && s.Status != "duplicate" {
 				sessionError(w, 409, "session_active", "This sign-in cannot be reset. Check its status; contact the operator if review is needed.")
 				return
 			}
 		}
 		if s == nil && len(a.sessions) >= 2048 {
 			sessionError(w, 503, "busy", "Service is busy. Try again shortly.")
+			return
+		}
+		// Never wait for adoption while holding mu: save publishes under mu.
+		if !a.adopt.TryLock() {
+			sessionError(w, 409, "save_busy", "A save is still running. Check status before resetting.")
+			return
+		}
+		owner := ""
+		if cookie != nil {
+			owner = pendingOwner(cookie.Value)
+		}
+		var err error
+		if owner != "" {
+			err = a.device.cleanupPending(now, owner)
+		}
+		a.adopt.Unlock()
+		if err != nil {
+			sessionError(w, 500, "cleanup_failed", "Could not clear local pending credentials. Ask the operator to check storage before retrying.")
 			return
 		}
 		if cookie != nil {

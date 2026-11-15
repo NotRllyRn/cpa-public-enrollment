@@ -118,6 +118,7 @@ func configure(raw []byte) error {
 
 // Called with nativeRuntime locked. A shut-down http.Server cannot be reused.
 func (r *runningPlugin) listen() error {
+	r.app.cleanupPending(time.Now())
 	listener, err := net.Listen("tcp", r.config.Listen)
 	if err != nil {
 		return errors.New("cannot bind enrollment listener: " + err.Error())
@@ -139,6 +140,7 @@ func (r *runningPlugin) listen() error {
 			case <-ctx.Done():
 				return
 			case now := <-ticker.C:
+				r.app.cleanupPending(now)
 				r.app.mu.Lock()
 				r.app.pruneSessions(now)
 				r.app.mu.Unlock()
