@@ -26,6 +26,8 @@ These are companion settings, not CPA keys. Origin has no trailing slash. Keep t
 
 See [security, recovery and prototype limitations](docs/prototype.md) before use. Actual browser CORS/login and deployed CPA import still need authorized manual testing. JWT claims are decoded, **not cryptographically verified**. Ambiguous imports require operator review, never blind reupload.
 
+Optional [enrollment webhooks](docs/webhooks.md) report terminal outcomes without blocking saves.
+
 ## Checks
 
 ```sh

@@ -51,7 +51,7 @@ func TestNativeManagement(t *testing.T) {
 		Routes    []any
 	}
 	nativeResult(t, "management.register", `{}`, &resources)
-	if len(resources.Resources) != 1 || resources.Resources[0].Path != "/open" || resources.Resources[0].Menu != "Public Enrollment" || len(resources.Routes) != 0 {
+	if len(resources.Resources) != 0 || len(resources.Routes) != 0 {
 		t.Fatalf("%+v", resources)
 	}
 	var response struct {
@@ -117,14 +117,10 @@ func TestPublicEnrollmentActualContract(t *testing.T) {
  if reg.Capabilities.ManagementAPI { p.Capabilities.ManagementAPI = &rpcPluginAdapter{} }
  if !validPlugin(p) { t.Fatal("actual host rejected metadata/capabilities") }
  if reg.SchemaVersion != 10 { t.Fatal(reg.SchemaVersion) }
- var resources struct { Resources []struct { Path, Menu, Description string } }
+ var resources rpcManagementRegistrationResponse
  if err := json.Unmarshal([]byte(RESOURCES), &resources); err != nil { t.Fatal(err) }
- if len(resources.Resources) != 1 { t.Fatal(resources) }
- r := resources.Resources[0]
- // Same normalization the host applies to unauthenticated browser resources.
- route := pluginapi.ResourceRoute{Path:r.Path, Menu:r.Menu, Description:r.Description, Handler: &rpcPluginAdapter{}}
- path, ok := normalizeResourceRoute("public-enrollment", route)
- if !ok || path != "/v0/resource/plugins/public-enrollment/open" { t.Fatalf("invalid resource: %q %v", path, ok) }
+ if len(resources.Resources) != 0 || len(resources.Routes) != 0 { t.Fatal(resources) }
+ // Management capability remains valid without public resources or menus.
 }
 `
 	quote := func(raw []byte) string { b, _ := json.Marshal(string(raw)); return string(b) }

@@ -33,6 +33,7 @@ type pluginConfig struct {
 	ManagementKeyFile string `yaml:"management_key_file"`
 	StateDir          string `yaml:"state_dir"`
 	OperatorName      string `yaml:"operator_name"`
+	WebhookURL        string `yaml:"webhook_url"`
 }
 type runningPlugin struct {
 	config pluginConfig
@@ -74,6 +75,9 @@ func parsePluginConfig(raw []byte) (pluginConfig, error) {
 	if !filepath.IsAbs(c.StateDir) || !filepath.IsAbs(c.ManagementKeyFile) {
 		return c, errors.New("state_dir and management_key_file must be absolute paths")
 	}
+	if err := validateWebhook(c.WebhookURL); err != nil {
+		return c, err
+	}
 	return c, nil
 }
 func configure(raw []byte) error {
@@ -89,7 +93,7 @@ func configure(raw []byte) error {
 	}
 	if r := nativeRuntime.current; r != nil {
 		old := r.config
-		if old.Listen != c.Listen || old.PublicOrigin != c.PublicOrigin || old.CPAURL != c.CPAURL || old.ManagementKeyFile != c.ManagementKeyFile || old.StateDir != c.StateDir || old.OperatorName != c.OperatorName {
+		if old.Listen != c.Listen || old.PublicOrigin != c.PublicOrigin || old.CPAURL != c.CPAURL || old.ManagementKeyFile != c.ManagementKeyFile || old.StateDir != c.StateDir || old.OperatorName != c.OperatorName || old.WebhookURL != c.WebhookURL {
 			return errors.New("runtime configuration changes require CPA restart")
 		}
 		// The host rolls back a quiesced image with plugin.reconfigure and
@@ -127,6 +131,9 @@ func (r *runningPlugin) listen() error {
 	done := make(chan struct{})
 	r.server, r.done = srv, done
 	r.app.mu.Lock()
+	// A failed drain can roll back with the previous worker still running.
+	r.app.webhook.stop()
+	r.app.webhook = newWebhook(r.config.WebhookURL, nil)
 	r.app.closing = false
 	r.app.mu.Unlock()
 	go func() { defer close(done); _ = srv.Serve(listener) }()
@@ -173,10 +180,12 @@ func (r *runningPlugin) quiesce(timeout time.Duration) error {
 		r.server = nil
 	}
 	if drained == nil {
+		r.app.webhook.stop()
 		return nil
 	}
 	select {
 	case <-drained:
+		r.app.webhook.stop()
 		return nil
 	case <-ctx.Done():
 		return errors.New("save drain timed out; replacement must be aborted")
@@ -217,7 +226,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return []byte(`{"ok":true,"result":{}}`), nil
 	}
 	if method == "management.register" {
-		return json.Marshal(map[string]any{"ok": true, "result": map[string]any{"resources": []map[string]string{{"Path": "/open", "Menu": "Public Enrollment", "Description": "Open the public enrollment page."}}}})
+		return json.Marshal(map[string]any{"ok": true, "result": map[string]any{"resources": []any{}, "menus": []any{}}})
 	}
 	if method == "management.handle" {
 		var req struct{ Method string }
@@ -260,7 +269,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return errorEnvelope("configuration_error", err.Error()), nil
 	}
 	fields := []map[string]string{}
-	for _, f := range [][2]string{{"listen", "HTTP bind address; default 0.0.0.0:8318"}, {"public_origin", "Exact public HTTPS origin without trailing slash"}, {"cpa_url", "Private CPA management origin; default http://127.0.0.1:8317"}, {"management_key_file", "Absolute path to mounted management key file (not the key)"}, {"state_dir", "Absolute private persistent directory (0700)"}, {"operator_name", "Optional public operator display name; plain text, requires CPA restart to change"}} {
+	for _, f := range [][2]string{{"listen", "HTTP bind address; default 0.0.0.0:8318"}, {"public_origin", "Exact public HTTPS origin without trailing slash"}, {"cpa_url", "Private CPA management origin; default http://127.0.0.1:8317"}, {"management_key_file", "Absolute path to mounted management key file (not the key)"}, {"state_dir", "Absolute private persistent directory (0700)"}, {"operator_name", "Optional public operator display name; plain text, requires CPA restart to change"}, {"webhook_url", "Optional HTTPS URL for enrollment result JSON notifications; includes email when known; requires CPA restart to change"}} {
 		fields = append(fields, map[string]string{"Name": f[0], "Type": "string", "Description": f[1]})
 	}
 	return json.Marshal(map[string]any{"ok": true, "result": map[string]any{"schema_version": schemaVersion, "metadata": map[string]any{"Name": "Public Enrollment", "Version": "0.1.0", "Author": "NotRllyRn", "GitHubRepository": "https://github.com/NotRllyRn/cpa-public-enrollment", "ConfigFields": fields}, "capabilities": map[string]bool{"management_api": true}}})

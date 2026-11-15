@@ -33,6 +33,7 @@ func (a *app) state(s *flow, status string) {
 	s.Status = status
 	if status != "saving" && status != "verifying" {
 		s.Finished = time.Now()
+		a.notify(s, "enrollment")
 	}
 }
 func (a *app) fail(s *flow, status, operation string, err error) {
@@ -43,6 +44,7 @@ func (a *app) fail(s *flow, status, operation string, err error) {
 	s.Message = message
 	s.Status = status
 	s.Finished = time.Now()
+	a.notify(s, "enrollment")
 }
 func (a *app) save(s *flow, code, verifier string) {
 	// Independent from the HTTP request: shutdown waits for this bounded operation.
@@ -64,6 +66,9 @@ func (a *app) save(s *flow, code, verifier string) {
 		a.fail(s, "error", "Token exchange failed", diagnostic("response is missing valid token or member identity fields"))
 		return
 	}
+	a.mu.Lock()
+	s.Email = t.Email
+	a.mu.Unlock()
 	if err := a.device.cleanupPending(time.Now(), ""); err != nil {
 		a.fail(s, "operator-review", "Cleaning expired pending credentials failed", err)
 		return

@@ -40,6 +40,12 @@ func main() {
 		log.Fatal("private writable state directory required (0700)")
 	}
 	a := &app{sessions: make(map[string]*flow), origin: origin, operatorName: os.Getenv("ENROLL_OPERATOR_NAME"), device: d, management: NewManagement(base, string(key))}
+	webhookURL := os.Getenv("ENROLL_WEBHOOK_URL")
+	if validateWebhook(webhookURL) != nil {
+		log.Fatal("invalid ENROLL_WEBHOOK_URL: HTTPS without credentials or fragments required")
+	}
+	a.webhook = newWebhook(webhookURL, nil)
+	defer a.webhook.stop()
 	a.cleanupPending(time.Now())
 	srv := &http.Server{Addr: env("ENROLL_LISTEN", "0.0.0.0:8318"), Handler: a, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

@@ -37,7 +37,11 @@ func (s *flow) expire(now time.Time) {
 }
 func (a *app) pruneSessions(now time.Time) {
 	for id, s := range a.sessions {
+		active := s.Status == "creating" || s.Status == "waiting"
 		s.expire(now)
+		if active && s.Status == "expired" {
+			a.notify(s, "enrollment")
+		}
 		if s.Status != "saving" && s.Status != "verifying" && !now.Before(s.retainedUntil()) {
 			delete(a.sessions, id)
 		}
@@ -61,6 +65,8 @@ func sessionError(w http.ResponseWriter, status int, code, message string) {
 const lostSessionMessage = "Your sign-in session is unavailable. Reset to clear its local pending credentials and review access. This does not revoke access or undo a CPA import."
 
 type flow struct {
+	Email    string    `json:"-"`
+	Reported bool      `json:"-"`
 	Owner    string    `json:"-"`
 	CSRF     string    `json:"csrf"`
 	Status   string    `json:"status"`
@@ -74,16 +80,18 @@ type flow struct {
 	Finished time.Time `json:"-"`
 }
 type app struct {
-	closing      bool
-	mu           sync.Mutex
-	sessions     map[string]*flow
-	origin       string
-	operatorName string
-	device       *Device
-	management   *Management
-	adopt        sync.Mutex
-	wg           sync.WaitGroup
-	saveDone     <-chan struct{}
+	lastClientReport time.Time
+	webhook          *webhook
+	closing          bool
+	mu               sync.Mutex
+	sessions         map[string]*flow
+	origin           string
+	operatorName     string
+	device           *Device
+	management       *Management
+	adopt            sync.Mutex
+	wg               sync.WaitGroup
+	saveDone         <-chan struct{}
 }
 
 func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -124,6 +132,7 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		CSRF, Lease, ID, Code, AuthorizationCode, Verifier string
 		Interval                                           int
+		Stage                                              string
 		Consent                                            bool
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 8192)
@@ -277,6 +286,17 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			done := make(chan struct{})
 			a.saveDone = done
 			go func() { defer a.wg.Done(); defer close(done); a.save(s, in.AuthorizationCode, in.Verifier) }()
+		case "/client-failure":
+			valid := (in.Stage == "creation" && s.Status == "creating") || (in.Stage == "poll" && s.Status == "waiting")
+			if !valid || s.Lease == "" || in.Lease != s.Lease || now.After(s.Until) {
+				sessionError(w, 409, "stale_report", "Failure report is no longer current.")
+				return
+			}
+			s.Status = "error"
+			s.Message = "Browser reported a device " + in.Stage + " failure."
+			s.Finished = now
+			s.ID, s.Code, s.Lease = "", "", ""
+			a.notify(s, "client_failure")
 		case "/status":
 		default:
 			sessionError(w, 404, "not_found", "Unknown sign-in endpoint.")

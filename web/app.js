@@ -173,7 +173,9 @@ async function tick() {
   if (s.status === 'waiting') {
    const claim = await api('/poll');
    if (claim.lease) {
-    const approved = await browserAuth.poll(claim);
+    let approved;
+    try { approved = await browserAuth.poll(claim); }
+    catch(e) { await api('/client-failure', {Stage:'poll',Lease:claim.lease}).catch(() => {}); throw e; }
     if (approved) {
      // Transient proof only: never localStorage, URLs or logs.
      show(await deliver('/approved', {Lease:claim.lease,AuthorizationCode:approved.authorization_code,Verifier:approved.code_verifier}));
@@ -198,8 +200,11 @@ $('start').onclick = async () => {
   }
   const s = await api('/start', {Consent:true}); show(s);
   if (s.status === 'creating' && s.lease) {
-   const c = await browserAuth.create();
+   let c;
+   try { c = await browserAuth.create(); }
+   catch(e) { await api('/client-failure', {Stage:'creation',Lease:s.lease}).catch(() => {}); throw e; }
    if (!c) {
+    await api('/client-failure', {Stage:'creation',Lease:s.lease}).catch(() => {});
     const e = new Error('OpenAI creation unavailable. Check sign-in status; a new code will not be requested automatically.');
     e.code = 'openai_creation_unavailable'; throw e;
    }
