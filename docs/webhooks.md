@@ -5,7 +5,7 @@ Standalone equivalent: `ENROLL_WEBHOOK_URL`. Empty disables delivery. Restart to
 The URL stays server-side. HTTPS is required; credentials and fragments are rejected.
 Private/internal destinations are intentionally allowed: only trusted administrators should set this URL.
 
-The server POSTs generic JSON, with no provider-specific envelope:
+Discord webhook URLs (`discord.com/api/webhooks/…` and `discordapp.com/api/webhooks/…`) receive a readable message with mentions disabled. Other destinations receive generic JSON:
 
 ```json
 {"event":"enrollment","status":"complete","timestamp":"2026-01-01T00:00:00Z","email":"person@example.com"}
@@ -32,5 +32,5 @@ Terminal outcomes are queued at most once per in-memory attempt. The single work
 32-event queue and a 3-second request timeout, no redirects and no retries. Full queues drop
 events; shutdown cancels delivery and discards pending events. Delivery is best effort,
 not durable or guaranteed. Webhook errors do not block authentication, saving, or cleanup.
-No response bodies, destination URLs, or delivery errors are logged. Existing reset/retention
+Delivery failures log only HTTP status or a generic network failure. Response bodies and destination URLs are never logged. Existing reset/retention
 rules still apply; notifications do not delete recovery evidence or revoke access.

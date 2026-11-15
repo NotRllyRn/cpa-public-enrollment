@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -36,6 +38,29 @@ func validateWebhook(raw string) error {
 	}
 	return nil
 }
+
+// Discord requires message content rather than the generic event JSON.
+func webhookPayload(raw string, n notification) any {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Hostname() != "discord.com" && u.Hostname() != "discordapp.com") || !strings.HasPrefix(u.Path, "/api/webhooks/") {
+		return n
+	}
+	text := "Codex enrollment: " + n.Status
+	if n.Email != "" {
+		text += "\nEmail: " + n.Email
+	}
+	if n.Error != "" {
+		text += "\nError: " + n.Error
+	}
+	text += "\nSource: " + n.Event
+	// Keep below Discord's 2,000-character limit, including non-ASCII text.
+	runes := []rune(text)
+	if len(runes) > 1800 {
+		text = string(runes[:1800]) + "…"
+	}
+	return map[string]any{"content": text, "allowed_mentions": map[string]any{"parse": []string{}}}
+}
+
 func newWebhook(raw string, transport http.RoundTripper) *webhook {
 	if raw == "" {
 		return nil
@@ -51,15 +76,20 @@ func newWebhook(raw string, transport http.RoundTripper) *webhook {
 			case <-ctx.Done():
 				return
 			case n := <-h.queue:
-				body, _ := json.Marshal(n)
+				body, _ := json.Marshal(webhookPayload(raw, n))
 				req, err := http.NewRequestWithContext(ctx, "POST", raw, bytes.NewReader(body))
 				if err != nil {
 					continue
 				}
 				req.Header.Set("Content-Type", "application/json")
 				resp, err := client.Do(req)
-				if err == nil {
+				if err != nil {
+					log.Print("Enrollment webhook delivery failed: network request failed")
+				} else {
 					resp.Body.Close()
+					if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+						log.Printf("Enrollment webhook delivery failed: HTTP %d", resp.StatusCode)
+					}
 				}
 			}
 		}
