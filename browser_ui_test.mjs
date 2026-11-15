@@ -145,6 +145,8 @@ test('flow states, responsive light/dark, plain-text operator and closure action
    assert.equal(await page.locator('#operator-name img').count(),0);
    for(const status of states) {
     await page.evaluate(s=>show(s),{...waiting,status});
+    assert.equal(await page.locator('.success-check').isVisible(),status==='complete');
+    assert.equal(await page.locator('.success-check').getAttribute('aria-hidden'),'true');
     assert.equal(await page.locator('#start').isVisible(),['idle','expired','error','operator-review','duplicate'].includes(status));
     assert.equal(await page.locator('#instructions').isVisible(),status==='waiting');
     assert.equal(await page.locator('#resume').isVisible(),false);

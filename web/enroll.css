@@ -61,6 +61,9 @@ summary { min-height: 44px; align-content: center; padding: .55rem 0; cursor: po
 .learn-more p { color: var(--muted); }
 .learn-more strong { color: var(--ink); }
 footer { border-top: 1px solid var(--line); padding-top: .9rem; margin-top: 1.3rem; color: var(--muted); font-size: .72rem; }
+.state-heading { display: flex; align-items: baseline; gap: .45rem; }
+.success-check { display: none; color: var(--good); font-size: 1.5rem; font-weight: 700; }
+.task[data-state="complete"] .success-check { display: inline; }
 .task[data-state="complete"] h2 { color: var(--good); }
 .task:is([data-state="error"], [data-state="operator-review"], [data-state="session_lost"], [data-state="network"]) h2, .error { color: var(--bad); }
 [hidden] { display: none !important; }
