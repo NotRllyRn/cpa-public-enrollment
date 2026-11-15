@@ -171,6 +171,12 @@ test('flow states, responsive light/dark, plain-text operator and closure action
     assert.equal(await page.locator('.success-check').getAttribute('aria-hidden'),'true');
     assert.equal(await page.locator('#start').isVisible(),['idle','expired','error','operator-review','duplicate'].includes(status));
     assert.equal(await page.locator('#instructions').isVisible(),status==='waiting');
+    if(status==='waiting') {
+     const copy=await page.locator('#copy').boundingBox();
+     const badge=await page.locator('#poll-countdown').boundingBox();
+     assert.ok(badge.x>=copy.x+copy.width,'countdown sits beside Copy code');
+     assert.ok(Math.abs((badge.y+badge.height/2)-(copy.y+copy.height/2))<2,'countdown is vertically aligned');
+    }
     assert.equal(await page.locator('#resume').isVisible(),false);
     assert.equal(await page.locator('#disclosure').isVisible(),status==='idle');
     const stage=['idle','creating','expired'].includes(status)?'review':status==='waiting'?'approve':'confirm';
