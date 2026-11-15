@@ -73,6 +73,28 @@ async function locked(page,expected=true) {
  assert.equal(await link.getAttribute('href'),expected?null:'https://auth.openai.com/codex/device');
  assert.equal(await link.evaluate(el=>el.tabIndex),expected?-1:0);
 }
+test('waiting badge shows server timing, a draining ring, and a non-live request label',async()=>{
+ const b=await pageFor({...waiting,interval:5,until:new Date(Date.now()+5000).toISOString()});
+ const {page,context}=b;
+ assert.equal(await page.locator('#poll-countdown').isVisible(),true);
+ assert.equal(await page.locator('#poll-label').textContent(),'Next sign-in check');
+ assert.equal(await page.locator('#poll-countdown').getAttribute('aria-live'),null);
+ const first=await page.locator('#poll-ring').evaluate(el=>Number(el.style.strokeDashoffset));
+ await page.waitForTimeout(150);
+ await page.evaluate(()=>countdown());
+ const second=await page.locator('#poll-ring').evaluate(el=>Number(el.style.strokeDashoffset));
+ assert.ok(second>first && second<100);
+ await page.emulateMedia({reducedMotion:'reduce'});
+ assert.equal(await page.locator('#poll-ring').evaluate(el=>getComputedStyle(el).transitionDuration),'0s');
+ b.setState({...waiting,interval:5,until:new Date(Date.now()+5000).toISOString(),poll_until:new Date(Date.now()+20000).toISOString()});
+ await page.evaluate(()=>syncSession());
+ assert.equal(await page.locator('#poll-label').textContent(),'Checking your sign-in');
+ assert.equal(await page.locator('#poll-seconds').textContent(),'…');
+ b.setState({status:'saving'}); await page.evaluate(()=>syncSession());
+ assert.equal(await page.locator('#poll-countdown').isVisible(),false);
+ assert.deepEqual(b.errors,[]);
+ await context.close();
+});
 test('real DOM: copy gate, failed clipboard, current code/session, focus and stable disclosures',async()=>{
  const b=await pageFor(waiting,{clipboard:'failure'}), {page,context}=b;
  try {

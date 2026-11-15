@@ -65,20 +65,29 @@ func sessionError(w http.ResponseWriter, status int, code, message string) {
 const lostSessionMessage = "Your sign-in session is unavailable. Reset to clear its local pending credentials and review access. This does not revoke access or undo a CPA import."
 
 type flow struct {
-	Email    string    `json:"-"`
-	Reported bool      `json:"-"`
-	Owner    string    `json:"-"`
-	CSRF     string    `json:"csrf"`
-	Status   string    `json:"status"`
-	Message  string    `json:"message,omitempty"`
-	ID       string    `json:"device_auth_id,omitempty"`
-	Code     string    `json:"user_code,omitempty"`
-	Lease    string    `json:"lease,omitempty"`
-	Until    time.Time `json:"until"`
-	Expires  time.Time `json:"expires"`
-	Interval int       `json:"interval"`
-	Finished time.Time `json:"-"`
+	Email     string    `json:"-"`
+	Reported  bool      `json:"-"`
+	Owner     string    `json:"-"`
+	CSRF      string    `json:"csrf"`
+	Status    string    `json:"status"`
+	Message   string    `json:"message,omitempty"`
+	ID        string    `json:"device_auth_id,omitempty"`
+	Code      string    `json:"user_code,omitempty"`
+	Lease     string    `json:"lease,omitempty"`
+	Until     time.Time `json:"until"`
+	PollUntil time.Time `json:"poll_until"`
+	Expires   time.Time `json:"expires"`
+	Interval  int       `json:"interval"`
+	Finished  time.Time `json:"-"`
 }
+
+func (s *flow) pollDeadline() time.Time {
+	if s.PollUntil.IsZero() {
+		return s.Until
+	}
+	return s.PollUntil
+}
+
 type app struct {
 	lastClientReport time.Time
 	webhook          *webhook
@@ -140,6 +149,10 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	d.DisallowUnknownFields()
 	if d.Decode(&in) != nil || d.Decode(new(any)) != io.EOF {
 		sessionError(w, 400, "invalid_request", "Invalid request.")
+		return
+	}
+	if in.Interval < 0 || int64(in.Interval) > int64((1<<63-1)/time.Second) {
+		sessionError(w, 400, "invalid_request", "Invalid sign-in check interval.")
 		return
 	}
 	a.mu.Lock()
@@ -249,20 +262,38 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.Status = "waiting"
 			s.Lease = ""
 			s.Interval = in.Interval
-			if s.Interval < 5 {
-				s.Interval = 5
+			if s.Interval < 3 {
+				s.Interval = 3
 			}
-			if s.Interval > 900 {
-				s.Interval = 86400
-			} // Never shorten a long provider interval.
 			s.Until = now.Add(time.Duration(s.Interval) * time.Second)
 		case "/poll":
-			if s.Status != "waiting" || now.Before(s.Until) {
-				respond(w, map[string]any{"status": s.Status})
+			if s.Status != "waiting" || now.Before(s.Until) || s.Lease != "" {
+				if s.Status == "waiting" && s.Lease != "" && now.After(s.PollUntil) {
+					s.Status = "error"
+					s.Message = "The last sign-in check could not be confirmed. Reset before trying again."
+					s.Finished = now
+					s.ID, s.Code, s.Lease = "", "", ""
+					s.PollUntil = time.Time{}
+				}
+				out := *s
+				out.Lease = ""
+				respond(w, out)
 				return
 			}
 			s.Lease = nonce()
-			s.Until = now.Add(time.Duration(s.Interval)*time.Second + 20*time.Second)
+			s.Until = now.Add(time.Duration(s.Interval) * time.Second)
+			s.PollUntil = now.Add(20 * time.Second)
+		case "/pending":
+			if s.Status != "waiting" || s.Lease == "" || in.Lease != s.Lease || now.After(s.PollUntil) {
+				sessionError(w, 409, "stale_approval", "This sign-in check is no longer current.")
+				return
+			}
+			if in.Interval > s.Interval {
+				s.Interval = in.Interval
+			}
+			s.Until = now.Add(time.Duration(s.Interval) * time.Second)
+			s.Lease = ""
+			s.PollUntil = time.Time{}
 		case "/approved":
 			if s.Status == "saving" || s.Status == "verifying" || s.Status == "complete" || s.Status == "operator-review" || s.Status == "duplicate" {
 				out := *s
@@ -270,7 +301,7 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				respond(w, out)
 				return
 			}
-			if s.Status != "waiting" || s.Lease == "" || in.Lease != s.Lease || now.After(s.Until) || in.AuthorizationCode == "" || in.Verifier == "" {
+			if s.Status != "waiting" || s.Lease == "" || in.Lease != s.Lease || now.After(s.pollDeadline()) || in.AuthorizationCode == "" || in.Verifier == "" {
 				sessionError(w, 409, "stale_approval", "This approval is no longer current. Check sign-in status before taking further action.")
 				return
 			}
@@ -288,7 +319,7 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			go func() { defer a.wg.Done(); defer close(done); a.save(s, in.AuthorizationCode, in.Verifier) }()
 		case "/client-failure":
 			valid := (in.Stage == "creation" && s.Status == "creating") || (in.Stage == "poll" && s.Status == "waiting")
-			if !valid || s.Lease == "" || in.Lease != s.Lease || now.After(s.Until) {
+			if !valid || s.Lease == "" || in.Lease != s.Lease || now.After(s.pollDeadline()) {
 				sessionError(w, 409, "stale_report", "Failure report is no longer current.")
 				return
 			}

@@ -1,6 +1,19 @@
 "use strict";
 const $ = id => document.getElementById(id);
 let csrf, busy = false, paused = false, recovery = false;
+let current = null, checking = false, nextStatus = 0;
+function countdown() {
+ const badge = $('poll-countdown');
+ if (!badge) return;
+ badge.hidden = current?.status !== 'waiting' || paused;
+ const active = checking || Date.parse(current?.poll_until) > Date.now();
+ const left = Math.max(0, Date.parse(current?.until) - Date.now()) || 0;
+ text('poll-seconds', active ? '…' : String(Math.ceil(left / 1000)));
+ text('poll-label', active ? 'Checking your sign-in' : 'Next sign-in check');
+ $('poll-badge').setAttribute('aria-label', active ? 'Checking your sign-in' : `Next sign-in check in ${Math.ceil(left / 1000)} seconds`);
+ const ring = $('poll-ring');
+ ring.style.strokeDashoffset = String(active ? 100 : 100 * (1 - Math.min(1, left / ((current?.interval || 3) * 1000))));
+}
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function deliver(path, data) {
  // Retry only transport/temporary delivery failures, never structured conflicts
@@ -19,6 +32,7 @@ async function api(path, data = {}) {
 // Only this transport contacts OpenAI. It never receives access/refresh tokens.
 const browserAuth = {
  async post(path, data) {
+  if (document.hidden) throw new Error('Return to this tab to continue sign-in.');
   const operation = path.endsWith('/usercode') ? 'Creating OpenAI sign-in code' : 'Checking OpenAI device approval';
   let r;
   try { r = await fetch('https://auth.openai.com'+path, {method:'POST', redirect:'error', credentials:'omit', referrerPolicy:'no-referrer', headers:{'Content-Type':'application/json'},body:JSON.stringify(data), signal:AbortSignal.timeout(15000)}); } catch {
@@ -26,7 +40,15 @@ const browserAuth = {
    e.code = 'openai_request_failed'; throw e;
   }
   // These responses mean approval is still pending only on the poll endpoint.
-  if ((r.status === 403 || r.status === 404) && path.endsWith('/token')) return null;
+  if (path.endsWith('/token')) {
+   const body = await r.clone().json().catch(() => ({}));
+   const reason = body.error?.code || body.error || body.code;
+   const retry = r.headers.get('Retry-After');
+   const delay = retry ? (/^\d+(\.\d+)?$/.test(retry) ? Number(retry) : (Date.parse(retry) - Date.now()) / 1000) : 0;
+   if ([403,404,429].includes(r.status) || ['authorization_pending','slow_down'].includes(reason)) {
+    return {pending:true, interval:Math.max(0, Math.ceil(delay) || 0, Number(body.interval) || 0), slow: r.status === 429 || reason === 'slow_down'};
+   }
+  }
   if (!r.ok) {
    const e = new Error(operation + ' failed: HTTP ' + r.status + '. Check sign-in status; code creation is not automatically retried.');
    e.code = 'openai_request_failed'; throw e;
@@ -111,6 +133,7 @@ $('copy').onclick = async () => {
  }
 };
 function show(s) {
+ current = s;
  const focused = document.activeElement;
  if (s.csrf) csrf = s.csrf;
  recovery = ['expired','error','operator-review','duplicate'].includes(s.status);
@@ -135,11 +158,13 @@ function show(s) {
   if (name === stage) $('stage-'+name).setAttribute('aria-current', 'step');
   else $('stage-'+name).removeAttribute('aria-current');
  }
+ countdown();
  restoreFocus(focused);
 }
 async function syncSession() {
- const s = await navigator.locks.request('cpa-session-bootstrap', () => api('/session'));
- show(s);
+ if (document.hidden) return;
+ const s = await navigator.locks.request('cpa-session-bootstrap', () => document.hidden ? null : api('/session'));
+ if (s) show(s);
 }
 async function failure(e) {
  const focused = document.activeElement;
@@ -147,7 +172,7 @@ async function failure(e) {
  $('disclosure').hidden = true;
  $('start').disabled = true; $('start').hidden = true; $('resume').hidden = false;
  $('start').setAttribute('aria-disabled', 'true');
- if (['session_changed','session_expired','session_active','stale_reservation','stale_approval'].includes(e.code)) {
+ if (!document.hidden && ['session_changed','session_expired','session_active','stale_reservation','stale_approval'].includes(e.code)) {
   try { await syncSession(); restoreFocus(focused); return; } catch(next) { e = next; }
  }
  const structured = typeof e.code === 'string' && e.code !== '';
@@ -166,24 +191,31 @@ async function failure(e) {
  restoreFocus(focused);
 }
 async function tick() {
- if (busy || paused) return;
+ if (busy || paused || document.hidden || Date.now() < nextStatus) return;
+ // Other tabs may release a live check at any time. Refresh that state every
+ // three seconds, without trying to claim its lease or showing its safety timer.
  busy = true;
+ nextStatus = Date.now() + 3000;
  try {
   const s = await api('/status'); show(s);
-  if (s.status === 'waiting') {
-   const claim = await api('/poll');
+  if (s.status === 'waiting' && !document.hidden && Date.now() >= (Date.parse(s.until) || 0) && !(Date.parse(s.poll_until) > Date.now())) {
+   const claim = await api('/poll'); show(claim);
    if (claim.lease) {
+    if (document.hidden) { show(await api('/pending', {Lease:claim.lease})); return; }
+    checking = true; countdown();
     let approved;
     try { approved = await browserAuth.poll(claim); }
     catch(e) { await api('/client-failure', {Stage:'poll',Lease:claim.lease}).catch(() => {}); throw e; }
-    if (approved) {
+    if (!approved || approved.pending) {
+     show(await deliver('/pending', {Lease:claim.lease, Interval:Math.max(claim.interval || 3, approved?.interval || 0, approved?.slow ? (claim.interval || 3) + 5 : 0)}));
+    } else {
      // Transient proof only: never localStorage, URLs or logs.
      show(await deliver('/approved', {Lease:claim.lease,AuthorizationCode:approved.authorization_code,Verifier:approved.code_verifier}));
     }
    } else if (claim.status !== 'waiting') { show(claim); }
   }
  } catch(e) { await failure(e); }
- finally {busy = false;}
+ finally {busy = false; checking = false; countdown();}
 }
 $('resume').onclick = async () => {
  if (busy) return;
@@ -208,7 +240,7 @@ $('start').onclick = async () => {
     const e = new Error('OpenAI creation unavailable. Check sign-in status; a new code will not be requested automatically.');
     e.code = 'openai_creation_unavailable'; throw e;
    }
-   show(await deliver('/created', {Lease:s.lease,ID:c.device_auth_id,Code:c.user_code || c.usercode,Interval:Number(c.interval)||5}));
+   show(await deliver('/created', {Lease:s.lease,ID:c.device_auth_id,Code:c.user_code || c.usercode,Interval:Number(c.interval)||3}));
   }
  } catch(e) { await failure(e); }
  finally {busy = false;}
@@ -219,6 +251,14 @@ $('start').onclick = async () => {
   text('state-title', 'Use a supported browser');
   text('status', 'A browser with Web Locks and request timeout support is required. Use a current browser. No sign-in has been started here.'); return;
  }
- try { await syncSession(); } catch(e) { await failure(e); }
- setInterval(tick, 2000);
+ if (!document.hidden) { try { await syncSession(); } catch(e) { await failure(e); } }
+ document.addEventListener('visibilitychange', async () => {
+  if (document.hidden || busy) return;
+  busy = true;
+  try { await syncSession(); nextStatus = 0; } catch(e) { await failure(e); }
+  finally { busy = false; }
+  void tick();
+ });
+ setInterval(tick, 250);
+ setInterval(countdown, 50);
 })();

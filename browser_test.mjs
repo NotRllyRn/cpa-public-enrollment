@@ -7,10 +7,11 @@ const html=readFileSync(new URL('./web/index.html',import.meta.url),'utf8');
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 function browser({supported=false,reply,writeText}={}) {
  const elements=new Map(), calls=[], clipboard=[];
- const document={getElementById(id){
+ const listeners = {};
+ const document={hidden:false,addEventListener(name,fn){listeners[name]=fn;},getElementById(id){
   if(!elements.has(id)) {
    const attributes=new Map(); let content='';
-   elements.set(id, {dataset:{}, hidden:false, writes:0,
+   elements.set(id, {dataset:{}, style:{}, hidden:false, writes:0,
     get textContent(){return content;}, set textContent(value){this.writes++;content=value;},
     setAttribute(name,value){attributes.set(name,value);},removeAttribute(name){attributes.delete(name);},getAttribute(name){return attributes.get(name)??null;},
     focus(){document.activeElement=this;},closest(){return null;}
@@ -21,10 +22,10 @@ function browser({supported=false,reply,writeText}={}) {
  const context=vm.createContext({document, navigator:supported?{locks:{request:async(_name,fn)=>fn()},clipboard:{writeText:async text=>{clipboard.push(text);if(writeText)await writeText(text);}}}:{}, AbortSignal, setTimeout, setInterval(){}, fetch:async(url,options)=>{
   const data=JSON.parse(options.body); calls.push({url,options,data});
   const response=reply?await reply(url,data):{device_auth_id:'id',user_code:'code'};
-  return {ok:!response.error,status:response.error?409:200,json:async()=>response};
+  return {ok:!response.error,status:response.httpStatus || (response.error?409:200),json:async()=>response,clone(){return this;},headers:{get(){return response.retryAfter || null;}}};
  }});
  vm.runInContext(source,context);
- return {context,calls,elements,clipboard,run:code=>vm.runInContext(code,context)};
+ return {context,calls,elements,clipboard,document,listeners,run:code=>vm.runInContext(code,context)};
 }
 test('device transport creates and polls directly to OpenAI with no cookies',async()=>{
  const {run,calls}=browser();
@@ -228,6 +229,110 @@ test('transport interruption is not a terminal save error; checking restores sta
  // DOMException timeout numeric codes are transport failures, not server errors.
  await b.run('failure(Object.assign(new Error("aborted"),{code:23}))');
  assert.equal(b.elements.get('task').dataset.state,'network');
+});
+test('foreground status updates continue during a long provider cooldown',async()=>{
+ for(const status of ['expired','complete','idle']) {
+  const cooling={...waiting,until:new Date(Date.now()+90001000).toISOString(),interval:90001};
+  const b=browser({supported:true,reply:url=>url==='/status'?{...cooling,status}:cooling}); await settle();
+  await b.run('tick()');
+  assert.equal(b.elements.get('task').dataset.state,status);
+  assert.equal(b.calls.filter(c=>c.url==='/status').length,1);
+  assert.equal(b.calls.filter(c=>c.url==='/poll').length,0);
+ }
+});
+test('hidden tabs initiate no automatic requests and resume from server deadline',async()=>{
+ const future = new Date(Date.now()+60000).toISOString();
+ const b=browser({supported:true,reply:()=>({...waiting,until:future,interval:60})}); await settle();
+ b.document.hidden=true;
+ const count=b.calls.length;
+ await b.run('tick()'); await b.run('syncSession()');
+ await assert.rejects(b.run('browserAuth.poll({})'));
+ assert.equal(b.calls.length,count);
+ b.document.hidden=false;
+ await b.listeners.visibilitychange();
+ await settle();
+ assert.equal(b.calls.length,count+2);
+ assert.equal(b.calls.at(-1).url,'/status');
+ b.run('countdown()');
+ assert.equal(b.elements.get('poll-seconds').textContent,'60');
+ assert.equal(b.elements.get('poll-label').textContent,'Next sign-in check');
+});
+test('an in-flight approval is delivered even after the tab becomes hidden',async()=>{
+ let resolve;
+ const b=browser({supported:true,reply:async url=>{
+  if(url==='/session'||url==='/status')return {...waiting,until:new Date(0).toISOString()};
+  if(url==='/poll')return {...waiting,lease:'claim',interval:3,poll_until:new Date(Date.now()+20000).toISOString()};
+  if(url.startsWith('https:'))return await new Promise(r=>{resolve=r;});
+  if(url==='/approved')return {status:'saving'};
+  throw Error(url);
+ }}); await settle();
+ const tick=b.run('tick()'); await settle();
+ assert.equal(b.elements.get('poll-label').textContent,'Checking your sign-in');
+ b.document.hidden=true;
+ resolve({authorization_code:'proof',code_verifier:'verifier'});
+ await tick;
+ assert.equal(b.calls.at(-1).url,'/approved');
+ assert.equal(b.elements.get('poll-countdown').hidden,true);
+ const count=b.calls.length; await b.run('tick()'); assert.equal(b.calls.length,count);
+});
+test('another tab refreshes an active lease without trying to duplicate its check',async()=>{
+ const active={...waiting,until:new Date(0).toISOString(),poll_until:new Date(Date.now()+20000).toISOString()};
+ const b=browser({supported:true,reply:url=>{
+  if(url==='/session'||url==='/status')return active;
+  throw Error(url);
+ }}); await settle();
+ await b.run('tick()');
+ assert.equal(b.calls.at(-1).url,'/status');
+ assert.equal(b.calls.some(c=>c.url==='/poll'),false);
+ assert.equal(b.elements.get('poll-label').textContent,'Checking your sign-in');
+});
+test('provider rate limits respect numeric and dated Retry-After without replay',async()=>{
+ for (const retryAfter of ['17',new Date(Date.now()+30000).toUTCString()]) {
+  const b=browser({reply:()=>({httpStatus:429,error:'rate_limited',retryAfter})});
+  const result=await b.run('browserAuth.poll({})');
+  assert.equal(result.pending,true); assert.equal(result.slow,true);
+  assert.ok(result.interval>=17);
+  assert.equal(b.calls.length,1);
+ }
+});
+test('hiding during status sync does not initiate a poll',async()=>{
+ let resolve;
+ const b=browser({supported:true,reply:async url=>{
+  if(url==='/session')return {...waiting,until:new Date(0).toISOString()};
+  if(url==='/status')return await new Promise(r=>{resolve=r;});
+  throw Error(url);
+ }}); await settle();
+ const pending=b.run('tick()'); await settle(); b.document.hidden=true;
+ resolve({...waiting,until:new Date(0).toISOString()}); await pending;
+ assert.equal(b.calls.at(-1).url,'/status');
+});
+test('hiding while claiming a check releases it without contacting OpenAI',async()=>{
+ let resolve;
+ const b=browser({supported:true,reply:async url=>{
+  if(url==='/session'||url==='/status')return {...waiting,until:new Date(0).toISOString()};
+  if(url==='/poll')return await new Promise(r=>{resolve=r;});
+  if(url==='/pending')return {...waiting,until:new Date(Date.now()+3000).toISOString()};
+  throw Error(url);
+ }}); await settle();
+ const pending=b.run('tick()'); await settle(); b.document.hidden=true;
+ resolve({...waiting,lease:'claim'}); await pending;
+ assert.equal(b.calls.at(-1).url,'/pending');
+ assert.equal(b.calls.some(c=>c.url.startsWith('https:')),false);
+});
+test('pending result releases its exact lease without a 20 second cooldown',async()=>{
+ const b=browser({supported:true,reply:url=>{
+  if(url==='/session'||url==='/status')return {...waiting,until:new Date(0).toISOString()};
+  if(url==='/poll')return {...waiting,lease:'claim',interval:5,poll_until:new Date(Date.now()+20000).toISOString()};
+  if(url.startsWith('https:'))return {error:'slow_down'};
+  if(url==='/pending')return {...waiting,interval:10,until:new Date(Date.now()+10000).toISOString()};
+  throw Error(url);
+ }}); await settle();
+ await b.run('tick()');
+ assert.equal(b.calls.at(-1).url,'/pending');
+ assert.equal(b.calls.at(-1).data.Lease,'claim');
+ assert.equal(b.calls.at(-1).data.Interval,10);
+ assert.equal(b.elements.get('poll-label').textContent,'Next sign-in check');
+ assert.equal(b.elements.get('poll-seconds').textContent,'10');
 });
 test('state-specific actions require review after terminal reset',async()=>{
  for(const status of ['idle','creating','waiting','saving','verifying','complete','duplicate','operator-review','error','expired']) {
