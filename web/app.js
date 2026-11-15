@@ -46,7 +46,7 @@ const messages = {
  expired:'The old code can no longer be used. Reset this session, then review access before starting again. Resetting does not create a code.',
  saving:'Saving your account. Keep this tab open. Do not start another sign-in.',
  verifying:'Checking that CPA adopted your account. Do not start another sign-in.',
- complete:'Your credentials were accepted by CPA. The operator can now use your Codex access. You may close this tab.',
+ complete:'Your credentials were accepted by CPA. You may close this tab.',
  duplicate:'This account is already connected. No new enrollment was added. If this is unexpected, contact the operator before trying again.',
  'operator-review':'The result is uncertain. You can reset local pending credentials and review access again. Reset does not revoke access or undo a CPA import.',
  error:'Sign-in could not be saved. Reset to clear local pending credentials and review access again.'
