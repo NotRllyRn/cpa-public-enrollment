@@ -139,7 +139,7 @@ test('all flow states have clear headings, actions and code visibility', async()
 });
 test('explicit authorization, progressive disclosure and exact stopping-access text',()=>{
  assert.doesNotMatch(html,/type="checkbox"|id="consent"/);
- assert.match(html,/By selecting Authorize and start, you allow this operator/);
+ assert.match(html,/By selecting Start, you allow this operator/);
  assert.match(html,/<details class="learn-more">\s*<summary>How access works<\/summary>/);
  assert.doesNotMatch(html,/<details[^>]*\sopen[\s>]/);
  assert.doesNotMatch(html,/stores and refreshes credentials|never enter your OpenAI password here|until you revoke it|Only continue if you trust|it does not test actual Codex requests/);

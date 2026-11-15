@@ -165,11 +165,11 @@ test('explicit consent only after reset, interrupted vs terminal error, unsuppor
  try {
   setState({status:'idle',csrf:'two'});
   await page.getByRole('button',{name:'Reset session to review access'}).click();
-  await page.getByRole('button',{name:'Authorize and start'}).waitFor();
+  await page.getByRole('button',{name:'Start'}).waitFor();
   assert.equal(calls.filter(c=>c.url==='/restart').length,1);
   assert.equal(calls.some(c=>c.url==='/start'),false);
   setState({status:'creating',csrf:'two'});
-  await page.getByRole('button',{name:'Authorize and start'}).click();
+  await page.getByRole('button',{name:'Start'}).click();
   await page.getByRole('heading',{name:'Creating your sign-in code'}).waitFor();
   assert.equal(await page.evaluate(()=>document.activeElement.id),'state-title');
   assert.equal(calls.find(c=>c.url==='/start').data.Consent,true);
@@ -185,7 +185,7 @@ test('explicit consent only after reset, interrupted vs terminal error, unsuppor
   await page.getByText(/Reset does not create a code/).waitFor();
   setState({status:'idle',csrf:'three'});
   await page.getByRole('button',{name:'Reset session to review access'}).click();
-  await page.getByRole('button',{name:'Authorize and start'}).waitFor();
+  await page.getByRole('button',{name:'Start'}).waitFor();
   assert.equal(calls.filter(c=>c.url==='/start').length,1,'Lost-session reset must not start another sign-in');
  } finally {await context.close();}
  const unsupported=await browser.newContext(); const up=await unsupported.newPage();

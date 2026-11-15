@@ -124,7 +124,7 @@ function show(s) {
   $('instructions').hidden = false; text('code', s.user_code);
   resetCopy(JSON.stringify([csrf, s.user_code]));
  } else { hideCode(); }
- text('start', recovery ? 'Reset session to review access' : 'Authorize and start');
+ text('start', recovery ? 'Reset session to review access' : 'Start');
  $('start').disabled = !(recovery || s.status === 'idle');
  $('start').hidden = $('start').disabled;
  $('start').setAttribute('aria-disabled', String($('start').disabled));
